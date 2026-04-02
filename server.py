@@ -447,6 +447,7 @@ def health():
 @app.post("/demo-lead")
 async def demo_lead(request: Request):
     data = await request.json()
+    print("STEP 1: request parsed")
 
     first_name = str(data.get("first_name") or "").strip()
     last_name = str(data.get("last_name") or "").strip()
@@ -467,11 +468,13 @@ async def demo_lead(request: Request):
         raise HTTPException(status_code=400, detail="Missing phone")
 
     phone_e164 = normalize_phone_e164(phone_raw)
+    print("STEP 2: phone normalized", phone_e164)
 
     print("PHONE E164:", phone_e164)
     print("DEBUG DEMO_SHEET_ID:", repr(DEMO_SHEET_ID))
     print("DEBUG DEMO_WORKSHEET_NAME:", repr(DEMO_WORKSHEET_NAME))
 
+    print("STEP 3: opening demo sheet")
     demo_ws = get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME)
     demo_hm = header_map_norm(demo_ws)
 
@@ -499,9 +502,11 @@ async def demo_lead(request: Request):
         phone_e164,
         demo_values,
     )
+    print("STEP 4: row written", row_num)
 
     print("ROW WRITTEN TO DEMO SHEET:", row_num)
 
+    print("STEP 5: creating Retell call")
     resp = create_retell_call_for_demo(
         first_name=first_name,
         last_name=last_name,
@@ -510,6 +515,8 @@ async def demo_lead(request: Request):
         lead_id=phone_e164,
         to_number=phone_e164,
     )
+
+    print("STEP 6: retell created")
 
     retell_call_id = str(resp.get("call_id") or "").strip()
     if retell_call_id:
