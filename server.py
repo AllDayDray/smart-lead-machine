@@ -89,20 +89,20 @@ def normalize_spoken_email(text: str) -> str:
 
     t = text.lower()
 
-        # fix spoken patterns
-        t = t.replace(" at ", "@")
-        t = t.replace(" at", "@")
-        t = t.replace(" dot ", ".")
-        t = t.replace(" dot", ".")
-        t = t.replace(" g mail ", "gmail")
-        t = t.replace("g mail", "gmail")
-        t = t.replace(" g-mail ", "gmail")
-        t = t.replace("g-mail", "gmail")
+    # fix spoken patterns
+    t = t.replace(" at ", "@")
+    t = t.replace(" at", "@")
+    t = t.replace(" dot ", ".")
+    t = t.replace(" dot", ".")
+    t = t.replace(" g mail ", "gmail")
+    t = t.replace("g mail", "gmail")
+    t = t.replace(" g-mail ", "gmail")
+    t = t.replace("g-mail", "gmail")
 
-        # collapse weird spacing like: t h e d r a y
-        t = re.sub(r"\s+", "", t)
+    # collapse weird spacing like: t h e d r a y
+    t = re.sub(r"\s+", "", t)
 
-        return t
+    return t
 
 
 def is_test_email(email: Optional[str]) -> bool:
