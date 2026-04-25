@@ -1,7 +1,6 @@
 # server.py
 print("SERVER FILE LOADED")
 
-from email.mime import text
 import os
 import re
 from datetime import datetime, timezone
@@ -85,116 +84,60 @@ def pick_best_email(text: str) -> str:
 
 
 def normalize_spoken_email(text: str) -> str:
-    """
-    Converts common spoken-email formats into regex-friendly text.
-
-    Examples:
-    - "dre dev at g mail dot com" -> "dredev@gmail.com"
-    - "t h e d r a y d e v at gmail dot com" -> "thedraydev@gmail.com"
-    """
     if not text:
         return ""
 
-    t = text.lower()
+    t = str(text).lower()
 
-    # Normalize common spoken domain patterns first.
-    t = re.sub(r"\bg\s*-?\s*mail\b", "gmail", t)
-    t = re.sub(r"\byahoo\s+mail\b", "yahoo", t)
-    t = re.sub(r"\bout\s*look\b", "outlook", t)
+    # Convert spelled-out letter runs like "t h e d r a y d e v" -> "thedraydev".
+    def collapse_letter_run(match):
+        return re.sub(r"[^a-z0-9]", "", match.group(0))
 
-    # Convert spoken separators.
+    t = re.sub(r"(?:\b[a-z0-9]\b[\s.–—-]*){2,}", collapse_letter_run, t)
+
+    # Fix common spoken email words.
+    t = re.sub(r"\bg\s*[- ]?\s*mail\b", "gmail", t)
     t = re.sub(r"\s+at\s+", "@", t)
     t = re.sub(r"\s+dot\s+", ".", t)
-    t = re.sub(r"\s+underscore\s+", "_", t)
-    t = re.sub(r"\s+(dash|hyphen)\s+", "-", t)
+    t = re.sub(r"\s+period\s+", ".", t)
+    t = t.replace(".@", "@")
 
     return t
 
 
-def compact_spoken_email_candidate(candidate: str) -> str:
-    """
-    Cleans one email-like candidate that may still contain spaces in the local part.
-    """
-    if not candidate or "@" not in candidate:
-        return ""
-
-    candidate = candidate.lower().strip()
-    candidate = normalize_spoken_email(candidate)
-
-    local, domain = candidate.rsplit("@", 1)
-
-    # Keep only the most likely local-part words near the @ sign.
-    local = re.sub(r"[^a-z0-9._%+\-\s]", " ", local)
-    local_tokens = [x for x in local.split() if x]
-
-    # Remove common filler words before the actual email.
-    filler = {
-        "email",
-        "is",
-        "it",
-        "its",
-        "it's",
-        "that",
-        "thats",
-        "that's",
-        "the",
-        "to",
-        "send",
-        "details",
-        "at",
-        "right",
-        "confirm",
-        "correct",
-    }
-    while local_tokens and local_tokens[0] in filler:
-        local_tokens.pop(0)
-
-    # If the local part was spelled as letters, join all letter tokens.
-    if local_tokens and all(re.fullmatch(r"[a-z0-9]", tok) for tok in local_tokens):
-        local_clean = "".join(local_tokens)
-    else:
-        local_clean = "".join(local_tokens[-4:]) if local_tokens else ""
-
-    domain = re.sub(r"[^a-z0-9.\-\s]", " ", domain)
-    domain = re.sub(r"\s+", "", domain)
-
-    email = f"{local_clean}@{domain}".strip(".-_@")
-    return email if EMAIL_RE_ALL.fullmatch(email) else ""
-
-
 def pick_spoken_email(text: str) -> str:
-    """
-    Finds emails from Retell transcripts where the user/agent says:
-    'name at gmail dot com' or spells the local part letter by letter.
-    """
     if not text:
         return ""
 
-    normalized = normalize_spoken_email(text)
+    t = normalize_spoken_email(text)
 
-    # First try normal extraction on the normalized text.
-    direct = pick_best_email(normalized)
-    if direct:
-        return direct
+    candidates = []
+    context_patterns = [
+        r"(?:email|e-mail|send(?:\s+it|\s+that)?(?:\s+to)?|details(?:\s+to)?|invite(?:\s+to)?|right:|correct:|to)\s+(?:is\s+|the\s+)?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})",
+        r"([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})",
+    ]
 
-    # Then scan around @ for candidates with spaced local parts.
-    candidates = re.findall(
-        r"([a-z0-9._%+\-\s]{1,80}@[a-z0-9.\-\s]{3,60}\.[a-z]{2,})",
-        normalized,
-        flags=re.I,
-    )
+    for pattern in context_patterns:
+        for m in re.finditer(pattern, t, flags=re.I):
+            candidate = m.group(1).strip().strip(".,!?;:'\"()[]{}")
+            if EMAIL_RE_ALL.fullmatch(candidate):
+                candidates.append(candidate.lower())
 
-    cleaned = []
-    for c in candidates:
-        email = compact_spoken_email_candidate(c)
+    return candidates[-1] if candidates else ""
+
+
+def pick_best_email_any_format(*texts: str) -> str:
+    for value in texts:
+        email = pick_best_email(value or "")
         if email:
-            cleaned.append(email)
+            return email
 
-    if not cleaned:
-        return ""
+    for value in texts:
+        email = pick_spoken_email(value or "")
+        if email:
+            return email
 
-    # Prefer the last confirmed/read-back version in the transcript.
-    return cleaned[-1]
+    return ""
 
 
 def is_test_email(email: Optional[str]) -> bool:
@@ -229,6 +172,16 @@ def clean_found_list(s: str) -> str:
 # =========================
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def seconds_since_iso(value: str) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt).total_seconds()
+    except Exception:
+        return None
 
 
 def normalize_phone_e164(phone_raw: str) -> str:
@@ -598,28 +551,46 @@ async def demo_lead(request: Request):
         "Demo",
     )
 
-    # Prevent duplicate Elfsight/Make submissions from creating duplicate Retell calls.
-    # Elfsight can fire the same submission more than once. If the row is already
-    # in CALL_STARTED, do not create another call.
+    # HARD DEDUPE: Elfsight/Make can fire the same submission twice.
+    # Block only true near-instant duplicates or an already active call.
     existing_cell = safe_find(demo_ws, phone_e164, demo_hm["lead_id"])
     if existing_cell:
         existing_row = existing_cell.row
         existing_status = (
             (demo_ws.cell(existing_row, demo_hm["status"]).value or "").strip().upper()
         )
+        existing_called_at = (
+            demo_ws.cell(existing_row, demo_hm["last_called_at"]).value or ""
+        ).strip()
         existing_call_id = (
             demo_ws.cell(existing_row, demo_hm["last_klaviyo_call_id"]).value or ""
         ).strip()
+        seconds_old = seconds_since_iso(existing_called_at)
 
-        if existing_status == "CALL_STARTED":
-            print("DUPLICATE SUBMIT BLOCKED — call already started")
+        should_block = False
+        reason = ""
+
+        if seconds_old is not None and seconds_old < 20:
+            should_block = True
+            reason = "duplicate_recent_submit"
+        elif (
+            existing_status == "CALL_STARTED"
+            and seconds_old is not None
+            and seconds_old < 900
+        ):
+            should_block = True
+            reason = "duplicate_active_call"
+
+        if should_block:
+            print(f"DUPLICATE SUBMIT BLOCKED — {reason}")
             return {
                 "ok": True,
-                "skipped": "duplicate_submit",
+                "skipped": reason,
                 "row": existing_row,
                 "status": existing_status,
                 "call_id": existing_call_id,
-                "phone": phone_e164,
+                "seconds_since_last_submit": seconds_old,
+                "retell": {"skipped": True, "reason": reason},
             }
 
     demo_values = {
@@ -794,25 +765,11 @@ async def retell_post_call(request: Request):
 
     meta_email = str(meta.get("email") or "").strip().lower()
 
-    normalized_summary = normalize_spoken_email(summary)
-    normalized_transcript = normalize_spoken_email(transcript_text)
-    normalized_call = normalize_spoken_email(str(call))
-    normalized_payload = normalize_spoken_email(str(payload))
-
     captured_email = (
-        pick_best_email(summary)
-        or pick_best_email(transcript_text)
-        or pick_best_email(normalized_summary)
-        or pick_best_email(normalized_transcript)
-        or pick_spoken_email(summary)
-        or pick_spoken_email(transcript_text)
+        pick_best_email_any_format(
+            summary, transcript_text, analysis_summary, str(call), str(payload)
+        )
         or meta_email
-        or pick_best_email(str(call))
-        or pick_best_email(normalized_call)
-        or pick_spoken_email(str(call))
-        or pick_best_email(str(payload))
-        or pick_best_email(normalized_payload)
-        or pick_spoken_email(str(payload))
     )
 
     text_blob = " ".join([outcome, summary, transcript_text, analysis_summary]).lower()
