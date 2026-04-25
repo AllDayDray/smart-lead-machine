@@ -1,6 +1,7 @@
 # server.py
 print("SERVER FILE LOADED")
 
+from email.mime import text
 import os
 import re
 from datetime import datetime, timezone
@@ -81,6 +82,27 @@ def pick_best_email(text: str) -> str:
             best = (e, score)
 
     return best[0] or emails[-1]
+
+def normalize_spoken_email(text: str) -> str:
+    if not text:
+        return ""
+
+    t = text.lower()
+
+        # fix spoken patterns
+        t = t.replace(" at ", "@")
+        t = t.replace(" at", "@")
+        t = t.replace(" dot ", ".")
+        t = t.replace(" dot", ".")
+        t = t.replace(" g mail ", "gmail")
+        t = t.replace("g mail", "gmail")
+        t = t.replace(" g-mail ", "gmail")
+        t = t.replace("g-mail", "gmail")
+
+        # collapse weird spacing like: t h e d r a y
+        t = re.sub(r"\s+", "", t)
+
+        return t
 
 
 def is_test_email(email: Optional[str]) -> bool:
@@ -656,11 +678,17 @@ async def retell_post_call(request: Request):
 
     meta_email = str(meta.get("email") or "").strip().lower()
 
+    normalized_summary = normalize_spoken_email(summary)
+    normalized_transcript = normalize_spoken_email(transcript_text)
+
     captured_email = (
         pick_best_email(summary)
         or pick_best_email(transcript_text)
+        or pick_best_email(normalized_summary)
+        or pick_best_email(normalized_transcript)
         or meta_email
         or pick_best_email(str(call))
+        or pick_best_email(normalize_spoken_email(str(call)))
         or pick_best_email(str(payload))
     )
 
@@ -718,15 +746,13 @@ async def retell_post_call(request: Request):
             "callback",
             "call me back",
             "reach back out",
-            "later today",
-            "not a good time",
-            "busy right now",
             "try me later",
             "call later",
+            "reach back out",
+            "try again later",
+            "give me a call later",
+            "can you call me back",
             "circle back",
-            "follow up later",
-            "another time",
-            "not right now",
         ]
 
         followup_phrases = [
@@ -738,6 +764,7 @@ async def retell_post_call(request: Request):
             "email me",
             "send an email",
             "follow up by email",
+            "follow up later",
             "shoot me an email",
             "send that over",
             "send it over",
@@ -823,9 +850,6 @@ async def retell_post_call(request: Request):
             status_val = "CALLBACK"
             next_action_val = "CALLBACK_LATER"
         elif has_any(followup_phrases):
-            status_val = "FOLLOW_UP"
-            next_action_val = "EMAIL_FOLLOWUP"
-        elif captured_email:
             status_val = "FOLLOW_UP"
             next_action_val = "EMAIL_FOLLOWUP"
         else:
