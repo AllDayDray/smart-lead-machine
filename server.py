@@ -83,26 +83,118 @@ def pick_best_email(text: str) -> str:
 
     return best[0] or emails[-1]
 
+
 def normalize_spoken_email(text: str) -> str:
+    """
+    Converts common spoken-email formats into regex-friendly text.
+
+    Examples:
+    - "dre dev at g mail dot com" -> "dredev@gmail.com"
+    - "t h e d r a y d e v at gmail dot com" -> "thedraydev@gmail.com"
+    """
     if not text:
         return ""
 
     t = text.lower()
 
-    # fix spoken patterns
-    t = t.replace(" at ", "@")
-    t = t.replace(" at", "@")
-    t = t.replace(" dot ", ".")
-    t = t.replace(" dot", ".")
-    t = t.replace(" g mail ", "gmail")
-    t = t.replace("g mail", "gmail")
-    t = t.replace(" g-mail ", "gmail")
-    t = t.replace("g-mail", "gmail")
+    # Normalize common spoken domain patterns first.
+    t = re.sub(r"\bg\s*-?\s*mail\b", "gmail", t)
+    t = re.sub(r"\byahoo\s+mail\b", "yahoo", t)
+    t = re.sub(r"\bout\s*look\b", "outlook", t)
 
-    # collapse weird spacing like: t h e d r a y
-    t = re.sub(r"\s+", "", t)
+    # Convert spoken separators.
+    t = re.sub(r"\s+at\s+", "@", t)
+    t = re.sub(r"\s+dot\s+", ".", t)
+    t = re.sub(r"\s+underscore\s+", "_", t)
+    t = re.sub(r"\s+(dash|hyphen)\s+", "-", t)
 
     return t
+
+
+def compact_spoken_email_candidate(candidate: str) -> str:
+    """
+    Cleans one email-like candidate that may still contain spaces in the local part.
+    """
+    if not candidate or "@" not in candidate:
+        return ""
+
+    candidate = candidate.lower().strip()
+    candidate = normalize_spoken_email(candidate)
+
+    local, domain = candidate.rsplit("@", 1)
+
+    # Keep only the most likely local-part words near the @ sign.
+    local = re.sub(r"[^a-z0-9._%+\-\s]", " ", local)
+    local_tokens = [x for x in local.split() if x]
+
+    # Remove common filler words before the actual email.
+    filler = {
+        "email",
+        "is",
+        "it",
+        "its",
+        "it's",
+        "that",
+        "thats",
+        "that's",
+        "the",
+        "to",
+        "send",
+        "details",
+        "at",
+        "right",
+        "confirm",
+        "correct",
+    }
+    while local_tokens and local_tokens[0] in filler:
+        local_tokens.pop(0)
+
+    # If the local part was spelled as letters, join all letter tokens.
+    if local_tokens and all(re.fullmatch(r"[a-z0-9]", tok) for tok in local_tokens):
+        local_clean = "".join(local_tokens)
+    else:
+        local_clean = "".join(local_tokens[-4:]) if local_tokens else ""
+
+    domain = re.sub(r"[^a-z0-9.\-\s]", " ", domain)
+    domain = re.sub(r"\s+", "", domain)
+
+    email = f"{local_clean}@{domain}".strip(".-_@")
+    return email if EMAIL_RE_ALL.fullmatch(email) else ""
+
+
+def pick_spoken_email(text: str) -> str:
+    """
+    Finds emails from Retell transcripts where the user/agent says:
+    'name at gmail dot com' or spells the local part letter by letter.
+    """
+    if not text:
+        return ""
+
+    normalized = normalize_spoken_email(text)
+
+    # First try normal extraction on the normalized text.
+    direct = pick_best_email(normalized)
+    if direct:
+        return direct
+
+    # Then scan around @ for candidates with spaced local parts.
+    candidates = re.findall(
+        r"([a-z0-9._%+\-\s]{1,80}@[a-z0-9.\-\s]{3,60}\.[a-z]{2,})",
+        normalized,
+        flags=re.I,
+    )
+
+    cleaned = []
+    for c in candidates:
+        email = compact_spoken_email_candidate(c)
+        if email:
+            cleaned.append(email)
+
+    if not cleaned:
+        return ""
+
+    # Prefer the last confirmed/read-back version in the transcript.
+    return cleaned[-1]
 
 
 def is_test_email(email: Optional[str]) -> bool:
@@ -506,6 +598,30 @@ async def demo_lead(request: Request):
         "Demo",
     )
 
+    # Prevent duplicate Elfsight/Make submissions from creating duplicate Retell calls.
+    # Elfsight can fire the same submission more than once. If the row is already
+    # in CALL_STARTED, do not create another call.
+    existing_cell = safe_find(demo_ws, phone_e164, demo_hm["lead_id"])
+    if existing_cell:
+        existing_row = existing_cell.row
+        existing_status = (
+            (demo_ws.cell(existing_row, demo_hm["status"]).value or "").strip().upper()
+        )
+        existing_call_id = (
+            demo_ws.cell(existing_row, demo_hm["last_klaviyo_call_id"]).value or ""
+        ).strip()
+
+        if existing_status == "CALL_STARTED":
+            print("DUPLICATE SUBMIT BLOCKED — call already started")
+            return {
+                "ok": True,
+                "skipped": "duplicate_submit",
+                "row": existing_row,
+                "status": existing_status,
+                "call_id": existing_call_id,
+                "phone": phone_e164,
+            }
+
     demo_values = {
         "first_name": first_name,
         "last_name": last_name,
@@ -680,16 +796,23 @@ async def retell_post_call(request: Request):
 
     normalized_summary = normalize_spoken_email(summary)
     normalized_transcript = normalize_spoken_email(transcript_text)
+    normalized_call = normalize_spoken_email(str(call))
+    normalized_payload = normalize_spoken_email(str(payload))
 
     captured_email = (
         pick_best_email(summary)
         or pick_best_email(transcript_text)
         or pick_best_email(normalized_summary)
         or pick_best_email(normalized_transcript)
+        or pick_spoken_email(summary)
+        or pick_spoken_email(transcript_text)
         or meta_email
         or pick_best_email(str(call))
-        or pick_best_email(normalize_spoken_email(str(call)))
+        or pick_best_email(normalized_call)
+        or pick_spoken_email(str(call))
         or pick_best_email(str(payload))
+        or pick_best_email(normalized_payload)
+        or pick_spoken_email(str(payload))
     )
 
     text_blob = " ".join([outcome, summary, transcript_text, analysis_summary]).lower()
