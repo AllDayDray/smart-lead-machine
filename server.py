@@ -1,6 +1,7 @@
 # server.py
 print("SERVER FILE LOADED")
 
+from email.mime import text
 import os
 import re
 from datetime import datetime, timezone
@@ -87,57 +88,23 @@ def normalize_spoken_email(text: str) -> str:
     if not text:
         return ""
 
-    t = str(text).lower()
+    t = text.lower()
 
-    # Convert spelled-out letter runs like "t h e d r a y d e v" -> "thedraydev".
-    def collapse_letter_run(match):
-        return re.sub(r"[^a-z0-9]", "", match.group(0))
-
-    t = re.sub(r"(?:\b[a-z0-9]\b[\s.–—-]*){2,}", collapse_letter_run, t)
-
-    # Fix common spoken email words.
-    t = re.sub(r"\bg\s*[- ]?\s*mail\b", "gmail", t)
+    # Convert common spoken email patterns into email symbols.
     t = re.sub(r"\s+at\s+", "@", t)
     t = re.sub(r"\s+dot\s+", ".", t)
-    t = re.sub(r"\s+period\s+", ".", t)
-    t = t.replace(".@", "@")
+
+    # Common domain speech cleanup.
+    t = t.replace("g-mail", "gmail")
+    t = t.replace("g mail", "gmail")
+    t = t.replace("gee mail", "gmail")
+
+    # Remove filler punctuation/spacing that speech transcripts add.
+    t = t.replace(" [at] ", "@")
+    t = t.replace(" [dot] ", ".")
+    t = re.sub(r"[^a-z0-9@._%+\-]+", "", t)
 
     return t
-
-
-def pick_spoken_email(text: str) -> str:
-    if not text:
-        return ""
-
-    t = normalize_spoken_email(text)
-
-    candidates = []
-    context_patterns = [
-        r"(?:email|e-mail|send(?:\s+it|\s+that)?(?:\s+to)?|details(?:\s+to)?|invite(?:\s+to)?|right:|correct:|to)\s+(?:is\s+|the\s+)?([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})",
-        r"([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})",
-    ]
-
-    for pattern in context_patterns:
-        for m in re.finditer(pattern, t, flags=re.I):
-            candidate = m.group(1).strip().strip(".,!?;:'\"()[]{}")
-            if EMAIL_RE_ALL.fullmatch(candidate):
-                candidates.append(candidate.lower())
-
-    return candidates[-1] if candidates else ""
-
-
-def pick_best_email_any_format(*texts: str) -> str:
-    for value in texts:
-        email = pick_best_email(value or "")
-        if email:
-            return email
-
-    for value in texts:
-        email = pick_spoken_email(value or "")
-        if email:
-            return email
-
-    return ""
 
 
 def is_test_email(email: Optional[str]) -> bool:
@@ -172,16 +139,6 @@ def clean_found_list(s: str) -> str:
 # =========================
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def seconds_since_iso(value: str) -> Optional[float]:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - dt).total_seconds()
-    except Exception:
-        return None
 
 
 def normalize_phone_e164(phone_raw: str) -> str:
@@ -245,7 +202,8 @@ def batch_write_cells(
             }
         )
     if updates:
-        ws.batch_update(updates)
+        # RAW keeps phone numbers like +13032463246 from being converted by Google Sheets.
+        ws.batch_update(updates, value_input_option="RAW")
 
 
 def append_row_by_headers(ws, hm: Dict[str, int], values: Dict[str, Any]) -> int:
@@ -254,7 +212,8 @@ def append_row_by_headers(ws, hm: Dict[str, int], values: Dict[str, Any]) -> int
     for col_name, val in values.items():
         if col_name in hm:
             row[hm[col_name] - 1] = "" if val is None else str(val)
-    ws.append_row(row, value_input_option="USER_ENTERED")
+    # RAW keeps + phone numbers as text instead of Google Sheets stripping the plus sign.
+    ws.append_row(row, value_input_option="RAW")
     return len(ws.col_values(1))
 
 
@@ -267,6 +226,47 @@ def safe_find(ws, value: str, col_index: int):
         return None
 
 
+def digits_only(value: str) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def parse_iso_datetime(value: str):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def find_existing_row_by_phone(
+    ws, hm: Dict[str, int], phone_e164: str
+) -> Optional[int]:
+    """Find a row even if Google Sheets stripped + from the phone/lead_id."""
+    target_digits = digits_only(phone_e164)
+    if not target_digits:
+        return None
+
+    for col_name in ("lead_id", "phone"):
+        if col_name not in hm:
+            continue
+        values = ws.col_values(hm[col_name])
+        for idx, value in enumerate(values[1:], start=2):
+            if digits_only(value) == target_digits:
+                return idx
+
+    return None
+
+
+def is_recent_duplicate(row_data: Dict[str, str], seconds: int = 90) -> bool:
+    last_called_raw = row_data.get("last_called_at", "")
+    last_called = parse_iso_datetime(last_called_raw)
+    if not last_called:
+        return False
+    age = (datetime.now(timezone.utc) - last_called).total_seconds()
+    return age >= 0 and age <= seconds
+
+
 def upsert_row_by_lead_id(
     ws, hm: Dict[str, int], lead_id: str, values: Dict[str, Any]
 ) -> int:
@@ -276,6 +276,10 @@ def upsert_row_by_lead_id(
         cell = safe_find(ws, lead_id, hm["lead_id"])
         if cell:
             existing_row = cell.row
+
+    # Fallback for existing rows where Google Sheets stripped the leading +.
+    if not existing_row:
+        existing_row = find_existing_row_by_phone(ws, hm, lead_id)
 
     if existing_row:
         safe_values = dict(values)
@@ -551,46 +555,30 @@ async def demo_lead(request: Request):
         "Demo",
     )
 
-    # HARD DEDUPE: Elfsight/Make can fire the same submission twice.
-    # Block only true near-instant duplicates or an already active call.
-    existing_cell = safe_find(demo_ws, phone_e164, demo_hm["lead_id"])
-    if existing_cell:
-        existing_row = existing_cell.row
-        existing_status = (
-            (demo_ws.cell(existing_row, demo_hm["status"]).value or "").strip().upper()
-        )
-        existing_called_at = (
-            demo_ws.cell(existing_row, demo_hm["last_called_at"]).value or ""
-        ).strip()
-        existing_call_id = (
-            demo_ws.cell(existing_row, demo_hm["last_klaviyo_call_id"]).value or ""
-        ).strip()
-        seconds_old = seconds_since_iso(existing_called_at)
-
-        should_block = False
-        reason = ""
-
-        if seconds_old is not None and seconds_old < 20:
-            should_block = True
-            reason = "duplicate_recent_submit"
-        elif (
-            existing_status == "CALL_STARTED"
-            and seconds_old is not None
-            and seconds_old < 900
-        ):
-            should_block = True
-            reason = "duplicate_active_call"
-
-        if should_block:
-            print(f"DUPLICATE SUBMIT BLOCKED — {reason}")
+    # Block duplicate Elfsight/Make submits for the same phone within a short window.
+    # This prevents double calls while still allowing fresh tests later.
+    existing_row = find_existing_row_by_phone(demo_ws, demo_hm, phone_e164)
+    if existing_row:
+        existing_data = row_dict(demo_ws, existing_row)
+        if is_recent_duplicate(existing_data, seconds=90):
+            print(
+                "🚫 DUPLICATE DEMO SUBMIT BLOCKED",
+                {
+                    "row": existing_row,
+                    "phone": phone_e164,
+                    "status": existing_data.get("status", ""),
+                    "last_called_at": existing_data.get("last_called_at", ""),
+                    "last_klaviyo_call_id": existing_data.get(
+                        "last_klaviyo_call_id", ""
+                    ),
+                },
+            )
             return {
                 "ok": True,
-                "skipped": reason,
+                "skipped": "duplicate_recent_submit",
                 "row": existing_row,
-                "status": existing_status,
-                "call_id": existing_call_id,
-                "seconds_since_last_submit": seconds_old,
-                "retell": {"skipped": True, "reason": reason},
+                "phone": phone_e164,
+                "status": existing_data.get("status", ""),
             }
 
     demo_values = {
@@ -765,11 +753,19 @@ async def retell_post_call(request: Request):
 
     meta_email = str(meta.get("email") or "").strip().lower()
 
+    normalized_summary = normalize_spoken_email(summary)
+    normalized_transcript = normalize_spoken_email(transcript_text)
+
     captured_email = (
-        pick_best_email_any_format(
-            summary, transcript_text, analysis_summary, str(call), str(payload)
-        )
+        pick_best_email(normalized_summary)
+        or pick_best_email(normalized_transcript)
+        or pick_best_email(normalize_spoken_email(str(call)))
+        or pick_best_email(normalize_spoken_email(str(payload)))
+        or pick_best_email(summary)
+        or pick_best_email(transcript_text)
         or meta_email
+        or pick_best_email(str(call))
+        or pick_best_email(str(payload))
     )
 
     text_blob = " ".join([outcome, summary, transcript_text, analysis_summary]).lower()
@@ -949,6 +945,7 @@ async def retell_post_call(request: Request):
     print("SUMMARY:", summary)
     print("TEXT_BLOB:", text_blob)
     print("TRANSCRIPT_TEXT:", transcript_text)
+    print("NORMALIZED_TRANSCRIPT:", normalized_transcript)
     print("ANALYSIS_SUMMARY:", analysis_summary)
     print("STATUS:", status_val, "NEXT_ACTION:", next_action_val)
     print("CAPTURED_EMAIL:", captured_email)
