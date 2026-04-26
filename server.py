@@ -1,7 +1,6 @@
 # server.py
 print("SERVER FILE LOADED")
 
-from email.mime import text
 import os
 import re
 from datetime import datetime, timezone
@@ -541,7 +540,6 @@ async def demo_lead(request: Request):
     phone_e164 = normalize_phone_e164(phone_raw)
     print("STEP 2: phone normalized", phone_e164)
 
-    print("PHONE E164:", phone_e164)
     print("DEBUG DEMO_SHEET_ID:", repr(DEMO_SHEET_ID))
     print("DEBUG DEMO_WORKSHEET_NAME:", repr(DEMO_WORKSHEET_NAME))
 
@@ -555,22 +553,28 @@ async def demo_lead(request: Request):
         "Demo",
     )
 
-    # Block duplicate Elfsight/Make submits for the same phone within a short window.
-    # This prevents double calls while still allowing fresh tests later.
     existing_row = find_existing_row_by_phone(demo_ws, demo_hm, phone_e164)
+
+    # Strong duplicate protection:
+    # If the same phone submitted recently and already has a Retell call_id, do not create another call.
     if existing_row:
         existing_data = row_dict(demo_ws, existing_row)
-        if is_recent_duplicate(existing_data, seconds=90):
+        existing_status = str(existing_data.get("status", "")).strip().upper()
+        existing_call_id = str(existing_data.get("last_klaviyo_call_id", "")).strip()
+
+        if is_recent_duplicate(existing_data, seconds=120) and existing_status in {
+            "CALL_REQUESTED",
+            "CALL_STARTED",
+            "FORM_RECEIVED",
+        }:
             print(
                 "🚫 DUPLICATE DEMO SUBMIT BLOCKED",
                 {
                     "row": existing_row,
                     "phone": phone_e164,
-                    "status": existing_data.get("status", ""),
+                    "status": existing_status,
                     "last_called_at": existing_data.get("last_called_at", ""),
-                    "last_klaviyo_call_id": existing_data.get(
-                        "last_klaviyo_call_id", ""
-                    ),
+                    "last_klaviyo_call_id": existing_call_id,
                 },
             )
             return {
@@ -578,51 +582,88 @@ async def demo_lead(request: Request):
                 "skipped": "duplicate_recent_submit",
                 "row": existing_row,
                 "phone": phone_e164,
-                "status": existing_data.get("status", ""),
+                "status": existing_status,
+                "call_id": existing_call_id,
             }
 
-    demo_values = {
+    # First write a truthful pre-call state. Do NOT mark CALL_STARTED yet.
+    pre_call_values = {
         "first_name": first_name,
         "last_name": last_name,
         "phone": phone_e164,
         "lead_id": phone_e164,
         "email_primary": email,
         "source": source,
-        "status": "CALL_STARTED",
-        "next_action": "REVIEW",
+        "status": "FORM_RECEIVED",
+        "next_action": "CALL_REQUESTED",
         "last_called_at": utc_now_iso(),
+        "last_klaviyo_call_id": "",
     }
 
     row_num = upsert_row_by_lead_id(
         demo_ws,
         demo_hm,
         phone_e164,
-        demo_values,
+        pre_call_values,
     )
-    print("STEP 4: row written", row_num)
+    print("STEP 4: row upserted as FORM_RECEIVED", row_num)
 
-    print("ROW WRITTEN TO DEMO SHEET:", row_num)
+    # Mark that the Retell request is being attempted. Still not CALL_STARTED.
+    batch_write_cells(
+        demo_ws,
+        row_num,
+        demo_hm,
+        {
+            "status": "CALL_REQUESTED",
+            "next_action": "WAITING_FOR_RETELL",
+            "last_called_at": utc_now_iso(),
+        },
+    )
 
     print("STEP 5: creating Retell call")
-    resp = create_retell_call_for_demo(
-        first_name=first_name,
-        last_name=last_name,
-        email=email,
-        source=source,
-        lead_id=phone_e164,
-        to_number=phone_e164,
-    )
+    try:
+        resp = create_retell_call_for_demo(
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            source=source,
+            lead_id=phone_e164,
+            to_number=phone_e164,
+        )
+        retell_call_id = str(resp.get("call_id") or "").strip()
+        if not retell_call_id:
+            raise RuntimeError(f"Retell returned no call_id. Response: {resp}")
 
-    print("STEP 6: retell created")
-
-    retell_call_id = str(resp.get("call_id") or "").strip()
-    if retell_call_id:
+    except Exception as e:
+        error_msg = str(e)
+        print("❌ RETELL CALL FAILED:", error_msg)
         batch_write_cells(
             demo_ws,
             row_num,
             demo_hm,
-            {"last_klaviyo_call_id": retell_call_id},
+            {
+                "status": "CALL_FAILED",
+                "next_action": "REVIEW",
+                "last_called_at": utc_now_iso(),
+                "last_klaviyo_call_id": "",
+            },
         )
+        raise HTTPException(status_code=500, detail=f"Retell call failed: {error_msg}")
+
+    print("STEP 6: retell created", retell_call_id)
+
+    # Only now is it honest to mark CALL_STARTED.
+    batch_write_cells(
+        demo_ws,
+        row_num,
+        demo_hm,
+        {
+            "status": "CALL_STARTED",
+            "next_action": "REVIEW",
+            "last_called_at": utc_now_iso(),
+            "last_klaviyo_call_id": retell_call_id,
+        },
+    )
 
     print("RETELL CALL CREATED:", resp)
 
@@ -640,6 +681,7 @@ async def demo_lead(request: Request):
         "first_name": first_name,
         "phone": phone_e164,
         "row": row_num,
+        "call_id": retell_call_id,
         "retell": resp,
     }
 
