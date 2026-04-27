@@ -813,25 +813,17 @@ async def retell_post_call(request: Request):
     print("STATUS:", status_val, "NEXT:", next_action_val, "EMAIL:", captured_email)
 
     if flow_type == "demo":
-        # Critical fix: demo webhooks match by call_id only. Never by phone or lead_id.
+        # Demo webhooks must update an existing row only.
+        # Never create a new row from a webhook.
         row_num = find_row_by_call_id_only(ws, hm, call_id)
+
         if row_num is None:
-            row_num = append_row_by_headers(
-                ws,
-                hm,
-                {
-                    "phone": to_number,
-                    "lead_id": lead_id or f"demo_unmatched_{uuid4().hex[:8]}",
-                    "email_primary": captured_email,
-                    "emails_found": captured_email,
-                    "source": "Retell unmatched demo webhook",
-                    "status": "WEBHOOK_RECEIVED",
-                    "next_action": "REVIEW",
-                    "last_called_at": utc_now_iso(),
-                    "last_klaviyo_call_id": call_id,
-                },
-            )
-            print("CREATED NEW DEMO ROW FOR UNMATCHED CALL_ID:", row_num)
+            print("DEMO WEBHOOK IGNORED — NO MATCHING CALL_ID:", call_id)
+            return {
+                "ok": True,
+                "ignored": "no_matching_demo_call_id",
+                "call_id": call_id,
+            }
     else:
         row_num = find_matching_row_outbound(ws, hm, call_id, lead_id, to_number)
         if row_num is None:
@@ -839,7 +831,6 @@ async def retell_post_call(request: Request):
                 status_code=404,
                 detail=f"Could not locate row call_id={call_id} lead_id={lead_id} to={to_number}",
             )
-
     # Clean old fake emails from the row.
     cleanup: Dict[str, Any] = {}
     if "email_primary" in hm:
