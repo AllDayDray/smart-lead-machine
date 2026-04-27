@@ -100,15 +100,24 @@ def is_valid_real_email(email: str) -> bool:
 def normalize_spoken_email(text: str) -> str:
     if not text:
         return ""
+
     t = str(text).lower()
-    t = re.sub(r"\b(at)\b", "@", t)
-    t = re.sub(r"\b(dot)\b", ".", t)
+
     t = (
         t.replace("g-mail", "gmail")
         .replace("g mail", "gmail")
         .replace("gee mail", "gmail")
     )
+
+    t = re.sub(r"\s+\bat\b\s+", "@", t)
+    t = re.sub(r"\s+\bdot\b\s+", ".", t)
+
+    # critical fix: remove spaces around email symbols
+    t = re.sub(r"\s*@\s*", "@", t)
+    t = re.sub(r"\s*\.\s*", ".", t)
+
     t = re.sub(r"[,;!?()\[\]{}<>\"']", " ", t)
+
     return t
 
 
@@ -713,11 +722,16 @@ async def retell_post_call(request: Request):
             captured_email = candidate
             break
     if not captured_email:
-        captured_email = pick_best_email(
-            normalize_spoken_email(transcript_text)
-        ) or pick_best_email(transcript_text)
-    if not is_valid_real_email(captured_email):
-        captured_email = ""
+        normalized_transcript = normalize_spoken_email(transcript_text)
+        normalized_payload = normalize_spoken_email(str(payload))
+        normalized_call = normalize_spoken_email(str(call))
+
+        captured_email = (
+            pick_best_email(normalized_transcript)
+            or pick_best_email(transcript_text)
+            or pick_best_email(normalized_call)
+            or pick_best_email(normalized_payload)
+        )
 
     text_blob = " ".join([outcome, summary, transcript_text]).lower()
 
