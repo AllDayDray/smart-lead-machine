@@ -696,15 +696,21 @@ async def retell_post_call(request: Request):
         or ""
     ).strip()
 
-    # Email policy: never parse the summary as an email. Metadata/structured fields first, transcript second.
+    # Email policy: structured Retell analysis first.
+    # Retell usually stores custom post-call fields inside call_analysis.custom_analysis_data.
+    custom_analysis = analysis.get("custom_analysis_data") or {}
+
     structured_email = (
         str(
-            first_found(
+            custom_analysis.get("captured_email")
+            or custom_analysis.get("email")
+            or custom_analysis.get("email_address")
+            or first_found(
                 analysis,
                 [
+                    "captured_email",
                     "email",
                     "email_address",
-                    "captured_email",
                     "customer_email",
                     "provided_email",
                 ],
