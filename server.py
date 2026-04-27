@@ -109,26 +109,18 @@ def normalize_spoken_email(text: str) -> str:
         .replace("gee mail", "gmail")
     )
 
-    # Convert spoken symbols
     t = re.sub(r"\s+\bat\b\s+", "@", t)
     t = re.sub(r"\s+\bdot\b\s+", ".", t)
 
-    # Remove spaces around @ and .
+    # critical fix: remove spaces around email symbols
     t = re.sub(r"\s*@\s*", "@", t)
     t = re.sub(r"\s*\.\s*", ".", t)
 
-    # NEW: join spelled-out letters before @
-    # Example: "t h e d r a y d e b@gmail.com" -> "thedraydeb@gmail.com"
+    # 🔥 ADD THIS BLOCK ONLY
+    # joins spelled-out letters before @
+    # "t h e d r a y d e v@gmail.com" → "thedraydev@gmail.com"
     t = re.sub(
-        r"((?:\b[a-z]\b\s*){2,})@",
-        lambda m: re.sub(r"\s+", "", m.group(1)) + "@",
-        t,
-    )
-
-    # NEW: join spaced letters anywhere near email patterns
-    # Example: "t h e d r a y d e b @ gmail . com"
-    t = re.sub(
-        r"((?:\b[a-z]\b\s*){2,})(?=[a-z0-9._%+-]*@)",
+        r"((?:\b[a-z]\b\s*){2,})(?=@)",
         lambda m: re.sub(r"\s+", "", m.group(1)),
         t,
     )
