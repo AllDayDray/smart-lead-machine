@@ -457,16 +457,68 @@ async def demo_lead(request: Request):
 
     ws = get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME)
     hm = header_map_norm(ws)
+
     ensure_required_columns(
         hm,
         ["lead_id", "status", "next_action", "last_called_at", "last_klaviyo_call_id"],
         "Demo",
     )
 
-    demo_lead_id = (
-        f"demo_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
-    )
+    # =========================
+    # HARD DUPLICATE BLOCK
+    # Stops Elfsight/Hostinger double-submit from creating two calls.
+    # Same phone within 60 seconds = skip second request.
+    # =========================
+    phone_digits = re.sub(r"\D", "", phone_e164)
 
+    try:
+        rows = ws.get_all_records()
+
+        for idx in range(len(rows) - 1, -1, -1):
+            existing_row = rows[idx]
+            existing_phone = re.sub(r"\D", "", str(existing_row.get("phone", "")))
+
+            if existing_phone != phone_digits:
+                continue
+
+            last_called_raw = str(existing_row.get("last_called_at") or "").strip()
+            if not last_called_raw:
+                continue
+
+            try:
+                last_dt = datetime.fromisoformat(last_called_raw.replace("Z", "+00:00"))
+
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+
+                seconds_since = (datetime.now(timezone.utc) - last_dt).total_seconds()
+
+                if 0 <= seconds_since < 60:
+                    print(
+                        "🚫 DUPLICATE DEMO SUBMIT BLOCKED",
+                        {
+                            "phone": phone_e164,
+                            "seconds_since": seconds_since,
+                            "existing_status": existing_row.get("status", ""),
+                        },
+                    )
+
+                    return {
+                        "ok": True,
+                        "skipped": "duplicate_recent_submit",
+                        "phone": phone_e164,
+                    }
+
+            except Exception as e:
+                print("Duplicate check parse skipped:", str(e))
+
+    except Exception as e:
+        print("Duplicate check failed, continuing:", str(e))
+
+    # =========================
+    # CREATE ONE NEW ROW
+    # lead_id stays the same as phone. Do not generate demo IDs.
+    # =========================
     row_num = append_row_by_headers(
         ws,
         hm,
@@ -474,7 +526,7 @@ async def demo_lead(request: Request):
             "first_name": first_name,
             "last_name": last_name,
             "phone": phone_e164,
-            "lead_id": demo_lead_id,
+            "lead_id": phone_e164,
             "email_primary": safe_email,
             "emails_found": safe_email,
             "source": source,
@@ -484,20 +536,27 @@ async def demo_lead(request: Request):
             "last_klaviyo_call_id": "",
         },
     )
-    print("NEW DEMO ROW:", row_num, demo_lead_id)
 
+    print("NEW DEMO ROW:", row_num, phone_e164)
+
+    # =========================
+    # CREATE RETELL CALL
+    # =========================
     try:
         resp = create_retell_call_for_demo(
             first_name=first_name,
             last_name=last_name,
             email=safe_email,
             source=source,
-            lead_id=demo_lead_id,
+            lead_id=phone_e164,
             to_number=phone_e164,
         )
+
         call_id = str(resp.get("call_id") or "").strip()
+
         if not call_id:
             raise RuntimeError(f"Retell returned no call_id. Response: {resp}")
+
         batch_write_cells(
             ws,
             row_num,
@@ -509,9 +568,12 @@ async def demo_lead(request: Request):
                 "last_klaviyo_call_id": call_id,
             },
         )
+
         print("RETELL CALL CREATED:", call_id)
+
     except Exception as e:
         print("RETELL CALL FAILED:", str(e))
+
         batch_write_cells(
             ws,
             row_num,
@@ -522,13 +584,17 @@ async def demo_lead(request: Request):
                 "last_called_at": utc_now_iso(),
             },
         )
+
         return {
             "ok": True,
             "row": row_num,
-            "lead_id": demo_lead_id,
+            "lead_id": phone_e164,
             "call_started": False,
         }
 
+    # =========================
+    # KLAVIYO PROFILE SYNC
+    # =========================
     if safe_email:
         try:
             klaviyo_upsert_profile(safe_email)
@@ -537,7 +603,12 @@ async def demo_lead(request: Request):
         except Exception as e:
             print("KLAVIYO PROFILE SYNC ERROR:", str(e))
 
-    return {"ok": True, "row": row_num, "lead_id": demo_lead_id, "call_id": call_id}
+    return {
+        "ok": True,
+        "row": row_num,
+        "lead_id": phone_e164,
+        "call_id": call_id,
+    }
 
 
 @app.post("/retell/post-call")
