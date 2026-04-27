@@ -631,6 +631,9 @@ async def retell_post_call(request: Request):
     meta = call.get("metadata") or {}
     dyn = call.get("retell_llm_dynamic_variables") or {}
     analysis = call.get("call_analysis") or {}
+    print("ANALYSIS KEYS:", analysis.keys())
+    print("CUSTOM ANALYSIS:", analysis.get("custom_analysis_data"))
+    print("RAW ANALYSIS:", analysis)
 
     flow_type = (
         str(meta.get("flow_type") or dyn.get("flow_type") or "").strip().lower()
@@ -738,6 +741,13 @@ async def retell_post_call(request: Request):
             or pick_best_email(normalized_call)
             or pick_best_email(normalized_payload)
         )
+
+    print("STRUCTURED EMAIL:", structured_email)
+    print("META EMAIL:", meta_email)
+    print("DYN EMAIL:", dyn_email)
+    print("CAPTURED EMAIL FINAL:", captured_email)
+    print("TRANSCRIPT (first 500):", transcript_text[:500])
+
 
     text_blob = " ".join([outcome, summary, transcript_text]).lower()
 
