@@ -498,6 +498,23 @@ async def demo_lead(request: Request):
             if existing_phone != phone_digits:
                 continue
 
+            existing_status = str(row.get("status") or "").strip().upper()
+            existing_next_action = str(row.get("next_action") or "").strip().upper()
+
+            if existing_status in {"CALL_REQUESTED", "CALL_STARTED", "CALL_ENDED"}:
+                print("🚫 ACTIVE DEMO CALL ALREADY EXISTS", {
+                    "phone": phone_e164,
+                    "status": existing_status,
+                    "next_action": existing_next_action,
+                })
+
+                return {
+                    "ok": True,
+                    "skipped": "active_demo_call_exists",
+                    "phone": phone_e164,
+                    "existing_status": existing_status,
+    }
+
             last_called_raw = str(row.get("last_called_at") or "").strip()
             if not last_called_raw:
                 continue
@@ -807,7 +824,7 @@ async def retell_post_call(request: Request):
             ]
         ):
             status_val = "NO_ANSWER"
-            next_action_val = "CALLBACK_LATER"
+            next_action_val = "NONE"
         elif has_any(
             [
                 "call back",
