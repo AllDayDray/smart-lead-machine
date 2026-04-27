@@ -497,11 +497,59 @@ async def demo_lead(request: Request):
             existing_phone = re.sub(r"\D", "", str(existing_row.get("phone", "")))
 
             if existing_phone != phone_digits:
-                continue
+                    continue
+
+            existing_status = str(existing_row.get("status") or "").strip().upper()
+            existing_next_action = str(existing_row.get("next_action") or "").strip().upper()
+
+                # Callback exception: do not create a new immediate call.
+                # The callback should be handled by separate scheduled callback logic.
+            if existing_status == "CALLBACK" and existing_next_action == "CALLBACK_LATER":
+                print(
+                        "🚫 CALLBACK ALREADY SCHEDULED",
+                        {
+                            "phone": phone_e164,
+                            "existing_status": existing_status,
+                            "existing_next_action": existing_next_action,
+                        },
+                    )
+
+                return {
+                    "ok": True,
+                    "skipped": "callback_already_scheduled",
+                    "phone": phone_e164,
+                    "existing_status": existing_status,
+                }
+
+            terminal_or_active_statuses = {
+                "CALL_REQUESTED",
+                "CALL_STARTED",
+                "BOOKED",
+                "FOLLOW_UP",
+                "NO_ANSWER",
+                "NOT_INTERESTED",
+                "CALL_COMPLETED",
+            }
+
+            if existing_status in terminal_or_active_statuses:
+                print(
+                    "🚫 DEMO LEAD ALREADY PROCESSED",
+                    {
+                        "phone": phone_e164,
+                        "existing_status": existing_status,
+                        "existing_next_action": existing_next_action,
+                    },
+                )
+
+                return {
+                    "ok": True,
+                    "skipped": "lead_already_processed",
+                    "phone": phone_e164,
+                    "existing_status": existing_status,
+                }
 
             last_called_raw = str(existing_row.get("last_called_at") or "").strip()
-            if not last_called_raw:
-                continue
+            continue
 
             try:
                 last_dt = datetime.fromisoformat(last_called_raw.replace("Z", "+00:00"))
@@ -581,9 +629,11 @@ async def demo_lead(request: Request):
             hm,
             {
                 "status": "CALL_STARTED",
-                "next_action": "REVIEW",
+                "next_action": "WAITING_FOR_ANALYSIS",
                 "last_called_at": utc_now_iso(),
                 "last_klaviyo_call_id": call_id,
+                "flow_type": "demo",
+                "call_attempts": 1,
             },
         )
 

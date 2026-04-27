@@ -51,10 +51,10 @@ def normalize_phone(raw) -> str:
     """
     Normalize to E.164.
     Accepts:
-      - +13032463246 (already E.164)
-      - 303-246-3246
-      - (303) 246-3246
-      - 13032463246
+        - +13032463246 (already E.164)
+        - 303-246-3246
+        - (303) 246-3246
+        - 13032463246
     """
     if raw is None:
         return ""
@@ -182,7 +182,7 @@ def promote_queued_rows(all_values, headers, hm, ws, max_to_ready):
 # MAIN DIALER LOOP
 # ------------------------
 
-   
+
 def main(limit_per_run=10, sleep_between_calls=0.6):
     if not all(
         [DIALER_SHEET_ID, RETELL_API_KEY, RETELL_AGENT_ID, RETELL_FROM_NUMBER]
@@ -259,6 +259,12 @@ def main(limit_per_run=10, sleep_between_calls=0.6):
 
         status = str(row.get("status") or "").strip().upper()
         next_action = str(row.get("next_action") or "").strip().upper()
+
+        flow_type = str(row.get("flow_type") or "").strip().lower()
+
+        # Never let the outbound dialer touch inbound/demo website leads
+        if flow_type and flow_type != "outbound":
+            continue
 
         # 🔒 SAFETY NET: only dial explicitly queued rows
         if next_action != "CALL":
@@ -356,7 +362,7 @@ def main(limit_per_run=10, sleep_between_calls=0.6):
             if "status" in hm:
                 ws.update_cell(sheet_row, hm["status"], "CALL_STARTED")
             if "next_action" in hm:
-                ws.update_cell(sheet_row, hm["next_action"], "")
+                ws.update_cell(sheet_row, hm["next_action"], "WAITING_FOR_ANALYSIS")
 
             if "call_attempts" in hm:
                 ws.update_cell(sheet_row, hm["call_attempts"], attempts + 1)
