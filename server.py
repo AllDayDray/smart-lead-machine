@@ -483,9 +483,8 @@ async def demo_lead(request: Request):
     )
 
     # =========================
-    # HARD DUPLICATE BLOCK
-    # Stops Elfsight/Hostinger double-submit from creating two calls.
-    # Same phone within 60 seconds = skip second request.
+    # LIGHT DUPLICATE BLOCK (optional safety)
+    # Prevents accidental rapid double-submit (like button spam)
     # =========================
     phone_digits = re.sub(r"\D", "", phone_e164)
 
@@ -493,63 +492,15 @@ async def demo_lead(request: Request):
         rows = ws.get_all_records()
 
         for idx in range(len(rows) - 1, -1, -1):
-            existing_row = rows[idx]
-            existing_phone = re.sub(r"\D", "", str(existing_row.get("phone", "")))
+            row = rows[idx]
 
+            existing_phone = re.sub(r"\D", "", str(row.get("phone", "")))
             if existing_phone != phone_digits:
-                    continue
+                continue
 
-            existing_status = str(existing_row.get("status") or "").strip().upper()
-            existing_next_action = str(existing_row.get("next_action") or "").strip().upper()
-
-                # Callback exception: do not create a new immediate call.
-                # The callback should be handled by separate scheduled callback logic.
-            if existing_status == "CALLBACK" and existing_next_action == "CALLBACK_LATER":
-                print(
-                        "🚫 CALLBACK ALREADY SCHEDULED",
-                        {
-                            "phone": phone_e164,
-                            "existing_status": existing_status,
-                            "existing_next_action": existing_next_action,
-                        },
-                    )
-
-                return {
-                    "ok": True,
-                    "skipped": "callback_already_scheduled",
-                    "phone": phone_e164,
-                    "existing_status": existing_status,
-                }
-
-            terminal_or_active_statuses = {
-                "CALL_REQUESTED",
-                "CALL_STARTED",
-                "BOOKED",
-                "FOLLOW_UP",
-                "NO_ANSWER",
-                "NOT_INTERESTED",
-                "CALL_COMPLETED",
-            }
-
-            if existing_status in terminal_or_active_statuses:
-                print(
-                    "🚫 DEMO LEAD ALREADY PROCESSED",
-                    {
-                        "phone": phone_e164,
-                        "existing_status": existing_status,
-                        "existing_next_action": existing_next_action,
-                    },
-                )
-
-                return {
-                    "ok": True,
-                    "skipped": "lead_already_processed",
-                    "phone": phone_e164,
-                    "existing_status": existing_status,
-                }
-
-            last_called_raw = str(existing_row.get("last_called_at") or "").strip()
-            continue
+            last_called_raw = str(row.get("last_called_at") or "").strip()
+            if not last_called_raw:
+                continue
 
             try:
                 last_dt = datetime.fromisoformat(last_called_raw.replace("Z", "+00:00"))
@@ -564,8 +515,7 @@ async def demo_lead(request: Request):
                         "🚫 DUPLICATE DEMO SUBMIT BLOCKED",
                         {
                             "phone": phone_e164,
-                            "seconds_since": seconds_since,
-                            "existing_status": existing_row.get("status", ""),
+                            "seconds_since": round(seconds_since, 2),
                         },
                     )
 
@@ -806,7 +756,6 @@ async def retell_post_call(request: Request):
     print("DYN EMAIL:", dyn_email)
     print("CAPTURED EMAIL FINAL:", captured_email)
     print("TRANSCRIPT (first 500):", transcript_text[:500])
-
 
     text_blob = " ".join([outcome, summary, transcript_text]).lower()
 
