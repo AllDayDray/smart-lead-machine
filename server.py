@@ -879,7 +879,24 @@ async def retell_post_call(request: Request):
         return any(w in text_blob for w in words)
 
     if event == "call_analyzed":
-        if has_any(
+
+        call_successful = analysis.get("call_successful")
+    in_voicemail = analysis.get("in_voicemail")
+
+    if event == "call_analyzed":
+        if call_successful is False:
+            status_val = "NO_ANSWER"
+            next_action_val = "NONE"
+
+        elif in_voicemail is True:
+            status_val = "NO_ANSWER"
+            next_action_val = "NONE"
+
+        elif not transcript_text.strip() and not summary.strip():
+            status_val = "NO_ANSWER"
+            next_action_val = "NONE"
+
+        elif has_any(
             [
                 "appointment booked",
                 "booked appointment",
@@ -900,6 +917,7 @@ async def retell_post_call(request: Request):
         ):
             status_val = "BOOKED"
             next_action_val = "SEND_CONFIRMATION_EMAIL"
+
         elif has_any(
             [
                 "not interested",
@@ -911,6 +929,7 @@ async def retell_post_call(request: Request):
         ):
             status_val = "NOT_INTERESTED"
             next_action_val = "NONE"
+
         elif has_any(
             [
                 "no answer",
@@ -924,6 +943,7 @@ async def retell_post_call(request: Request):
         ):
             status_val = "NO_ANSWER"
             next_action_val = "NONE"
+
         elif has_any(
             [
                 "call back",
@@ -938,6 +958,7 @@ async def retell_post_call(request: Request):
         ):
             status_val = "CALLBACK"
             next_action_val = "CALLBACK_LATER"
+
         elif has_any(
             [
                 "send me info",
@@ -955,9 +976,11 @@ async def retell_post_call(request: Request):
         ):
             status_val = "FOLLOW_UP"
             next_action_val = "EMAIL_FOLLOWUP"
+
         else:
             status_val = "REVIEW"
             next_action_val = "REVIEW"
+
     else:
         status_val = ""
         next_action_val = ""
