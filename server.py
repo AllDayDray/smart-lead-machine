@@ -1,9 +1,8 @@
 # server.py
-print("SERVER FILE LOADED - strict email + call_id safe matching v3")
+print("SERVER FILE LOADED - strict email + callback-safe matching v4")
 
 import os
 import re
-from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
@@ -37,6 +36,34 @@ RETELL_AGENT_ID = os.getenv("RETELL_AGENT_ID", "").strip()
 RETELL_FROM_NUMBER = os.getenv("RETELL_FROM_NUMBER", "").strip()
 
 app = FastAPI()
+
+
+STATUS_PRIORITY = {
+    "": 0,
+    "CALL_ENDED": 0,
+    "WAITING_FOR_ANALYSIS": 0,
+    "CALL_REQUESTED": 0,
+    "CALL_STARTED": 0,
+    "CALL_FAILED": 0,
+    "REVIEW": 1,
+    "NO_ANSWER": 2,
+    "FOLLOW_UP": 3,
+    "CALLBACK": 4,
+    "NOT_INTERESTED": 5,
+    "NOT INTERESTED": 5,
+    "BOOKED": 6,
+}
+
+FINAL_STATUSES = {
+    "BOOKED",
+    "CALLBACK",
+    "FOLLOW_UP",
+    "NO_ANSWER",
+    "NOT_INTERESTED",
+    "NOT INTERESTED",
+    "WRONG_NUMBER",
+    "GATEKEEPER",
+}
 
 # =========================
 # EMAIL HELPERS
@@ -207,6 +234,13 @@ def normalize_phone_e164(phone_raw: str) -> str:
     raise HTTPException(status_code=400, detail=f"Invalid phone: {phone_raw}")
 
 
+def safe_normalize_phone_e164(phone_raw: str) -> str:
+    try:
+        return normalize_phone_e164(phone_raw)
+    except Exception:
+        return ""
+
+
 def norm_header(s: str) -> str:
     return str(s).strip().lower().replace(" ", "_")
 
@@ -298,6 +332,23 @@ def find_matching_row_outbound(
     return None
 
 
+def find_matching_row_by_phone_candidates(
+    ws, hm: Dict[str, int], phone_candidates: List[str]
+) -> Optional[int]:
+    for phone in phone_candidates:
+        normalized = safe_normalize_phone_e164(phone)
+        if not normalized:
+            continue
+
+        for col in ("lead_id", "phone"):
+            if col in hm:
+                cell = safe_find(ws, normalized, hm[col])
+                if cell:
+                    return cell.row
+
+    return None
+
+
 def get_sheet_for_flow(flow_type: str):
     if flow_type == "demo":
         return get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME), "Demo"
@@ -319,6 +370,24 @@ def first_found(obj, keys):
             if hit:
                 return hit
     return ""
+
+
+def pick_final_status(
+    current_status: str,
+    new_status: str,
+    current_next_action: str,
+    new_next_action: str,
+):
+    current_status = (current_status or "").strip().upper()
+    new_status = (new_status or "").strip().upper()
+
+    current_priority = STATUS_PRIORITY.get(current_status, 0)
+    new_priority = STATUS_PRIORITY.get(new_status, 0)
+
+    if new_priority >= current_priority:
+        return new_status, new_next_action
+
+    return current_status, current_next_action
 
 
 # =========================
@@ -452,7 +521,11 @@ def create_retell_call_for_demo(
 # =========================
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "server.py", "version": "strict-email-callid-v3"}
+    return {
+        "ok": True,
+        "service": "server.py",
+        "version": "strict-email-callback-safe-v4",
+    }
 
 
 @app.post("/demo-lead")
@@ -502,18 +575,21 @@ async def demo_lead(request: Request):
             existing_next_action = str(row.get("next_action") or "").strip().upper()
 
             if existing_status in {"CALL_REQUESTED", "CALL_STARTED", "CALL_ENDED"}:
-                print("🚫 ACTIVE DEMO CALL ALREADY EXISTS", {
-                    "phone": phone_e164,
-                    "status": existing_status,
-                    "next_action": existing_next_action,
-                })
+                print(
+                    "🚫 ACTIVE DEMO CALL ALREADY EXISTS",
+                    {
+                        "phone": phone_e164,
+                        "status": existing_status,
+                        "next_action": existing_next_action,
+                    },
+                )
 
                 return {
                     "ok": True,
                     "skipped": "active_demo_call_exists",
                     "phone": phone_e164,
                     "existing_status": existing_status,
-    }
+                }
 
             last_called_raw = str(row.get("last_called_at") or "").strip()
             if not last_called_raw:
@@ -650,6 +726,7 @@ async def demo_lead(request: Request):
 async def retell_post_call(request: Request):
     payload = await request.json()
     event = str(payload.get("event") or payload.get("type") or "").strip()
+
     if event not in ("call_ended", "call_analyzed"):
         return {"ok": True, "ignored_event": event}
 
@@ -657,6 +734,7 @@ async def retell_post_call(request: Request):
     meta = call.get("metadata") or {}
     dyn = call.get("retell_llm_dynamic_variables") or {}
     analysis = call.get("call_analysis") or {}
+
     print("ANALYSIS KEYS:", analysis.keys())
     print("CUSTOM ANALYSIS:", analysis.get("custom_analysis_data"))
     print("RAW ANALYSIS:", analysis)
@@ -665,6 +743,7 @@ async def retell_post_call(request: Request):
         str(meta.get("flow_type") or dyn.get("flow_type") or "").strip().lower()
         or "outbound"
     )
+
     ws, sheet_label = get_sheet_for_flow(flow_type)
     hm = header_map_norm(ws)
     ensure_required_columns(
@@ -688,6 +767,7 @@ async def retell_post_call(request: Request):
         or first_found(payload, ["summary", "call_summary", "notes"])
         or ""
     ).strip()
+
     transcript_text = str(
         first_found(
             call,
@@ -714,6 +794,7 @@ async def retell_post_call(request: Request):
         )
         or ""
     ).strip()
+
     outcome = str(
         first_found(analysis, ["outcome", "disposition", "result", "status"])
         or first_found(
@@ -725,10 +806,7 @@ async def retell_post_call(request: Request):
         or ""
     ).strip()
 
-    # Email policy: structured Retell analysis first.
-    # Retell usually stores custom post-call fields inside call_analysis.custom_analysis_data.
     custom_analysis = analysis.get("custom_analysis_data") or {}
-
     structured_email = (
         str(
             custom_analysis.get("captured_email")
@@ -751,11 +829,13 @@ async def retell_post_call(request: Request):
     )
     meta_email = str(meta.get("email") or "").strip().lower()
     dyn_email = str(dyn.get("email") or "").strip().lower()
+
     captured_email = ""
     for candidate in (meta_email, dyn_email, structured_email):
         if is_valid_real_email(candidate):
             captured_email = candidate
             break
+
     if not captured_email:
         normalized_transcript = normalize_spoken_email(transcript_text)
         normalized_payload = normalize_spoken_email(str(payload))
@@ -868,60 +948,80 @@ async def retell_post_call(request: Request):
     print("STATUS:", status_val, "NEXT:", next_action_val, "EMAIL:", captured_email)
 
     if flow_type == "demo":
-        # Demo webhooks must update an existing row only.
-        # Never create a new row from a webhook.
         row_num = find_row_by_call_id_only(ws, hm, call_id)
 
         if row_num is None:
-            print("DEMO WEBHOOK IGNORED — NO MATCHING CALL_ID:", call_id)
+            row_num = find_matching_row_by_phone_candidates(
+                ws,
+                hm,
+                [from_number, lead_id, to_number],
+            )
+
+        if row_num is None:
+            print(
+                "DEMO WEBHOOK IGNORED — NO MATCHING CALL_ID OR PHONE:",
+                call_id,
+                from_number,
+                to_number,
+                lead_id,
+            )
             return {
                 "ok": True,
-                "ignored": "no_matching_demo_call_id",
+                "ignored": "no_matching_demo_call_id_or_phone",
                 "call_id": call_id,
+                "from_number": from_number,
+                "to_number": to_number,
+                "lead_id": lead_id,
             }
     else:
         row_num = find_matching_row_outbound(ws, hm, call_id, lead_id, to_number)
+
         if row_num is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Could not locate row call_id={call_id} lead_id={lead_id} to={to_number}",
             )
-    # Clean old fake emails from the row.
+
     cleanup: Dict[str, Any] = {}
+
     if "email_primary" in hm:
         existing_primary = (
             (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
         )
         if existing_primary and not is_valid_real_email(existing_primary):
             cleanup["email_primary"] = ""
+
     if "emails_found" in hm:
         existing_found = ws.cell(row_num, hm["emails_found"]).value or ""
         cleaned_found = clean_found_list(existing_found)
         if cleaned_found != existing_found:
             cleanup["emails_found"] = cleaned_found
+
     if cleanup:
         batch_write_cells(ws, row_num, hm, cleanup)
 
     if event == "call_ended":
         current_status = (ws.cell(row_num, hm["status"]).value or "").strip().upper()
         updates = {"last_called_at": utc_now_iso()}
+
         if call_id:
             updates["last_klaviyo_call_id"] = call_id
-        if current_status not in {
-            "BOOKED",
-            "CALLBACK",
-            "FOLLOW_UP",
-            "NO_ANSWER",
-            "NOT_INTERESTED",
-            "WRONG_NUMBER",
-            "GATEKEEPER",
-        }:
+
+        if current_status not in FINAL_STATUSES:
             updates["status"] = "CALL_ENDED"
             updates["next_action"] = "WAITING_FOR_ANALYSIS"
+
         batch_write_cells(ws, row_num, hm, updates)
-        return {"ok": True, "event": event, "row": row_num, "call_id": call_id}
+
+        return {
+            "ok": True,
+            "event": event,
+            "row": row_num,
+            "call_id": call_id,
+        }
 
     email_updates: Dict[str, Any] = {}
+
     if captured_email:
         if "email_primary" in hm:
             current_primary = (
@@ -929,15 +1029,34 @@ async def retell_post_call(request: Request):
             )
             if not is_valid_real_email(current_primary):
                 email_updates["email_primary"] = captured_email
+
         if "emails_found" in hm:
             current_found = ws.cell(row_num, hm["emails_found"]).value or ""
             email_updates["emails_found"] = append_unique_email(
                 current_found, captured_email
             )
 
+    current_status = (
+        (ws.cell(row_num, hm["status"]).value or "").strip().upper()
+        if "status" in hm
+        else ""
+    )
+    current_next_action = (
+        (ws.cell(row_num, hm["next_action"]).value or "").strip()
+        if "next_action" in hm
+        else ""
+    )
+
+    final_status, final_next_action = pick_final_status(
+        current_status,
+        status_val,
+        current_next_action,
+        next_action_val,
+    )
+
     final_updates = {
-        "status": status_val,
-        "next_action": next_action_val,
+        "status": final_status,
+        "next_action": final_next_action,
         "last_called_at": utc_now_iso(),
         "last_klaviyo_call_id": call_id,
         **email_updates,
@@ -945,15 +1064,18 @@ async def retell_post_call(request: Request):
     batch_write_cells(ws, row_num, hm, final_updates)
 
     email_for_klaviyo = ""
+
     if "email_primary" in hm:
         row_email = (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
         if is_valid_real_email(row_email):
             email_for_klaviyo = row_email
+
     if not email_for_klaviyo and captured_email:
         email_for_klaviyo = captured_email
 
     if email_for_klaviyo and is_valid_real_email(email_for_klaviyo):
-        raw = status_val.upper()
+        raw = final_status.upper()
+
         if raw == "BOOKED":
             klaviyo_outcome = "BOOKED"
         elif raw == "CALLBACK":
@@ -962,8 +1084,10 @@ async def retell_post_call(request: Request):
             klaviyo_outcome = "NOT INTERESTED"
         else:
             klaviyo_outcome = "FOLLOW_UP"
+
         try:
             klaviyo_upsert_profile(email_for_klaviyo)
+
             if klaviyo_outcome in ("BOOKED", "CALLBACK", "FOLLOW_UP"):
                 klaviyo_track_call_outcome(
                     email_for_klaviyo,
@@ -973,12 +1097,13 @@ async def retell_post_call(request: Request):
                         "lead_id": lead_id,
                         "to_number": to_number,
                         "from_number": from_number,
-                        "sheet_status": status_val,
-                        "next_action": next_action_val,
+                        "sheet_status": final_status,
+                        "next_action": final_next_action,
                         "flow_type": flow_type,
                     },
                 )
                 print("Klaviyo Call Outcome sent:", klaviyo_outcome, email_for_klaviyo)
+
         except Exception as e:
             print("Klaviyo error:", str(e))
     else:
@@ -988,8 +1113,8 @@ async def retell_post_call(request: Request):
         "ok": True,
         "event": event,
         "row": row_num,
-        "status": status_val,
-        "next_action": next_action_val,
+        "status": final_status,
+        "next_action": final_next_action,
         "call_id": call_id,
         "captured_email": captured_email,
         "flow_type": flow_type,
