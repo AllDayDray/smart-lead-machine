@@ -335,16 +335,35 @@ def find_matching_row_outbound(
 def find_matching_row_by_phone_candidates(
     ws, hm: Dict[str, int], phone_candidates: List[str]
 ) -> Optional[int]:
+    normalized_candidates = []
+
     for phone in phone_candidates:
         normalized = safe_normalize_phone_e164(phone)
-        if not normalized:
-            continue
+        if normalized and normalized not in normalized_candidates:
+            normalized_candidates.append(normalized)
+
+    if not normalized_candidates:
+        return None
+
+    rows = ws.get_all_values()
+
+    # Search from bottom to top so the newest matching row wins
+    for row_index in range(len(rows), 1, -1):
+        row = rows[row_index - 1]
 
         for col in ("lead_id", "phone"):
-            if col in hm:
-                cell = safe_find(ws, normalized, hm[col])
-                if cell:
-                    return cell.row
+            if col not in hm:
+                continue
+
+            col_index = hm[col] - 1
+
+            if col_index >= len(row):
+                continue
+
+            cell_value = safe_normalize_phone_e164(row[col_index])
+
+            if cell_value in normalized_candidates:
+                return row_index
 
     return None
 
@@ -1028,8 +1047,14 @@ async def retell_post_call(request: Request):
             "flow_type": flow_type,
         }
 
-    print("FINAL ROW MATCHED:", row_num, "FLOW:", flow_type)
-
+    print(
+        "FINAL ROW MATCHED:",
+        row_num,
+        "FLOW:",
+        flow_type,
+        "PHONE:",
+        from_number or lead_id or to_number,
+    )
 
     cleanup: Dict[str, Any] = {}
 
