@@ -949,78 +949,105 @@ async def retell_post_call(request: Request):
 
     row_num = None
 
-    if flow_type == "demo":
-        row_num = find_row_by_call_id_only(ws, hm, call_id)
+    is_callback_without_lead = flow_type != "demo" and not lead_id and from_number
 
-        if row_num is None:
-            row_num = find_matching_row_by_phone_candidates(
-                ws,
-                hm,
-                [from_number, lead_id, to_number],
+    # Callback came in as outbound, so check demo sheet FIRST
+    if is_callback_without_lead:
+        try:
+            demo_ws = get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME)
+            demo_hm = header_map_norm(demo_ws)
+
+            demo_row = find_matching_row_by_phone_candidates(
+                demo_ws,
+                demo_hm,
+                [from_number, to_number],
             )
 
+            if demo_row:
+                print("CALLBACK MATCHED DEMO SHEET FIRST:", from_number)
+                ws = demo_ws
+                hm = demo_hm
+                row_num = demo_row
+                flow_type = "demo"
+
+        except Exception as e:
+            print("Demo-first callback match failed:", str(e))
+
+    # Normal matching if demo-first did not match
+    if row_num is None:
+        if flow_type == "demo":
+            row_num = find_row_by_call_id_only(ws, hm, call_id)
+
+            if row_num is None:
+                row_num = find_matching_row_by_phone_candidates(
+                    ws,
+                    hm,
+                    [from_number, lead_id, to_number],
+                )
         else:
             row_num = find_matching_row_outbound(ws, hm, call_id, lead_id, to_number)
 
-        # Fallback: callback came in as outbound, but belongs to demo sheet
-        if row_num is None:
-            try:
-                demo_ws = get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME)
-                demo_hm = header_map_norm(demo_ws)
+    # Last fallback: check demo sheet again by phone
+    if row_num is None:
+        try:
+            demo_ws = get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME)
+            demo_hm = header_map_norm(demo_ws)
 
-                demo_row = find_matching_row_by_phone_candidates(
-                    demo_ws,
-                    demo_hm,
-                    [from_number, lead_id, to_number],
-                )
-
-                if demo_row:
-                    print("CALLBACK MATCHED DEMO SHEET BY PHONE")
-                    ws = demo_ws
-                    hm = demo_hm
-                    row_num = demo_row
-                    flow_type = "demo"
-
-            except Exception as e:
-                print("Demo fallback match failed:", str(e))
-
-        if row_num is None:
-            print(
-                "WEBHOOK IGNORED — NO MATCHING ROW:",
-                call_id,
-                from_number,
-                to_number,
-                lead_id,
-                flow_type,
+            demo_row = find_matching_row_by_phone_candidates(
+                demo_ws,
+                demo_hm,
+                [from_number, lead_id, to_number],
             )
-            return {
-                "ok": True,
-                "ignored": "no_matching_row",
-                "call_id": call_id,
-                "from_number": from_number,
-                "to_number": to_number,
-                "lead_id": lead_id,
-                "flow_type": flow_type,
-            }
+
+            if demo_row:
+                print("CALLBACK MATCHED DEMO SHEET BY PHONE:", from_number)
+                ws = demo_ws
+                hm = demo_hm
+                row_num = demo_row
+                flow_type = "demo"
+
+        except Exception as e:
+            print("Demo fallback match failed:", str(e))
+
+    if row_num is None:
+        print(
+            "WEBHOOK IGNORED — NO MATCHING ROW:",
+            call_id,
+            from_number,
+            to_number,
+            lead_id,
+            flow_type,
+        )
+        return {
+            "ok": True,
+            "ignored": "no_matching_row",
+            "call_id": call_id,
+            "from_number": from_number,
+            "to_number": to_number,
+            "lead_id": lead_id,
+            "flow_type": flow_type,
+        }
+
+    print("FINAL ROW MATCHED:", row_num, "FLOW:", flow_type)
 
 
-        cleanup: Dict[str, Any] = {}
+    cleanup: Dict[str, Any] = {}
 
-        if "email_primary" in hm:
-            existing_primary = (
-                (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
-            )
-            if existing_primary and not is_valid_real_email(existing_primary):
-                cleanup["email_primary"] = ""
+    if "email_primary" in hm:
+        existing_primary = (
+            (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
+        )
+        if existing_primary and not is_valid_real_email(existing_primary):
+            cleanup["email_primary"] = ""
 
-        if "emails_found" in hm:
-            existing_found = ws.cell(row_num, hm["emails_found"]).value or ""
-            cleaned_found = clean_found_list(existing_found)
-            if cleaned_found != existing_found:
-                cleanup["emails_found"] = cleaned_found
+    if "emails_found" in hm:
+        existing_found = ws.cell(row_num, hm["emails_found"]).value or ""
+        cleaned_found = clean_found_list(existing_found)
+        if cleaned_found != existing_found:
+            cleanup["emails_found"] = cleaned_found
 
-        if cleanup:
-            batch_write_cells(ws, row_num, hm, cleanup)
+    if cleanup:
+        batch_write_cells(ws, row_num, hm, cleanup)
 
         if event == "call_ended":
             current_status = (ws.cell(row_num, hm["status"]).value or "").strip().upper()
