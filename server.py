@@ -1049,122 +1049,122 @@ async def retell_post_call(request: Request):
     if cleanup:
         batch_write_cells(ws, row_num, hm, cleanup)
 
-        if event == "call_ended":
-            current_status = (ws.cell(row_num, hm["status"]).value or "").strip().upper()
-            updates = {"last_called_at": utc_now_iso()}
+    if event == "call_ended":
+        current_status = (ws.cell(row_num, hm["status"]).value or "").strip().upper()
+        updates = {"last_called_at": utc_now_iso()}
 
-            if call_id:
-                updates["last_klaviyo_call_id"] = call_id
+        if call_id:
+            updates["last_klaviyo_call_id"] = call_id
 
-            if current_status not in FINAL_STATUSES:
-                updates["status"] = "CALL_ENDED"
-                updates["next_action"] = "WAITING_FOR_ANALYSIS"
+        if current_status not in FINAL_STATUSES:
+            updates["status"] = "CALL_ENDED"
+            updates["next_action"] = "WAITING_FOR_ANALYSIS"
 
-            batch_write_cells(ws, row_num, hm, updates)
-
-            return {
-                "ok": True,
-                "event": event,
-                "row": row_num,
-                "call_id": call_id,
-            }
-
-        email_updates: Dict[str, Any] = {}
-
-        if captured_email:
-            if "email_primary" in hm:
-                current_primary = (
-                    (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
-                )
-                if not is_valid_real_email(current_primary):
-                    email_updates["email_primary"] = captured_email
-
-            if "emails_found" in hm:
-                current_found = ws.cell(row_num, hm["emails_found"]).value or ""
-                email_updates["emails_found"] = append_unique_email(
-                    current_found, captured_email
-                )
-
-        current_status = (
-            (ws.cell(row_num, hm["status"]).value or "").strip().upper()
-            if "status" in hm
-            else ""
-        )
-        current_next_action = (
-            (ws.cell(row_num, hm["next_action"]).value or "").strip()
-            if "next_action" in hm
-            else ""
-        )
-
-        final_status, final_next_action = pick_final_status(
-            current_status,
-            status_val,
-            current_next_action,
-            next_action_val,
-        )
-
-        final_updates = {
-            "status": final_status,
-            "next_action": final_next_action,
-            "last_called_at": utc_now_iso(),
-            "last_klaviyo_call_id": call_id,
-            **email_updates,
-        }
-        batch_write_cells(ws, row_num, hm, final_updates)
-
-        email_for_klaviyo = ""
-
-        if "email_primary" in hm:
-            row_email = (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
-            if is_valid_real_email(row_email):
-                email_for_klaviyo = row_email
-
-        if not email_for_klaviyo and captured_email:
-            email_for_klaviyo = captured_email
-
-        if email_for_klaviyo and is_valid_real_email(email_for_klaviyo):
-            raw = final_status.upper()
-
-            if raw == "BOOKED":
-                klaviyo_outcome = "BOOKED"
-            elif raw == "CALLBACK":
-                klaviyo_outcome = "CALLBACK"
-            elif raw in ("NOT_INTERESTED", "NOT INTERESTED"):
-                klaviyo_outcome = "NOT INTERESTED"
-            else:
-                klaviyo_outcome = "FOLLOW_UP"
-
-            try:
-                klaviyo_upsert_profile(email_for_klaviyo)
-
-                if klaviyo_outcome in ("BOOKED", "CALLBACK", "FOLLOW_UP"):
-                    klaviyo_track_call_outcome(
-                        email_for_klaviyo,
-                        klaviyo_outcome,
-                        {
-                            "call_id": call_id,
-                            "lead_id": lead_id,
-                            "to_number": to_number,
-                            "from_number": from_number,
-                            "sheet_status": final_status,
-                            "next_action": final_next_action,
-                            "flow_type": flow_type,
-                        },
-                    )
-                    print("Klaviyo Call Outcome sent:", klaviyo_outcome, email_for_klaviyo)
-
-            except Exception as e:
-                print("Klaviyo error:", str(e))
-        else:
-            print("No valid email for Klaviyo; skipped.")
+        batch_write_cells(ws, row_num, hm, updates)
 
         return {
             "ok": True,
             "event": event,
             "row": row_num,
-            "status": final_status,
-            "next_action": final_next_action,
             "call_id": call_id,
-            "captured_email": captured_email,
-            "flow_type": flow_type,
         }
+
+    email_updates: Dict[str, Any] = {}
+
+    if captured_email:
+        if "email_primary" in hm:
+            current_primary = (
+                (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
+            )
+            if not is_valid_real_email(current_primary):
+                email_updates["email_primary"] = captured_email
+
+        if "emails_found" in hm:
+            current_found = ws.cell(row_num, hm["emails_found"]).value or ""
+            email_updates["emails_found"] = append_unique_email(
+                current_found, captured_email
+            )
+
+    current_status = (
+        (ws.cell(row_num, hm["status"]).value or "").strip().upper()
+        if "status" in hm
+        else ""
+    )
+    current_next_action = (
+        (ws.cell(row_num, hm["next_action"]).value or "").strip()
+        if "next_action" in hm
+        else ""
+    )
+
+    final_status, final_next_action = pick_final_status(
+        current_status,
+        status_val,
+        current_next_action,
+        next_action_val,
+    )
+
+    final_updates = {
+        "status": final_status,
+        "next_action": final_next_action,
+        "last_called_at": utc_now_iso(),
+        "last_klaviyo_call_id": call_id,
+        **email_updates,
+    }
+    batch_write_cells(ws, row_num, hm, final_updates)
+
+    email_for_klaviyo = ""
+
+    if "email_primary" in hm:
+        row_email = (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
+        if is_valid_real_email(row_email):
+            email_for_klaviyo = row_email
+
+    if not email_for_klaviyo and captured_email:
+        email_for_klaviyo = captured_email
+
+    if email_for_klaviyo and is_valid_real_email(email_for_klaviyo):
+        raw = final_status.upper()
+
+        if raw == "BOOKED":
+            klaviyo_outcome = "BOOKED"
+        elif raw == "CALLBACK":
+            klaviyo_outcome = "CALLBACK"
+        elif raw in ("NOT_INTERESTED", "NOT INTERESTED"):
+            klaviyo_outcome = "NOT INTERESTED"
+        else:
+            klaviyo_outcome = "FOLLOW_UP"
+
+        try:
+            klaviyo_upsert_profile(email_for_klaviyo)
+
+            if klaviyo_outcome in ("BOOKED", "CALLBACK", "FOLLOW_UP"):
+                klaviyo_track_call_outcome(
+                    email_for_klaviyo,
+                    klaviyo_outcome,
+                    {
+                        "call_id": call_id,
+                        "lead_id": lead_id,
+                        "to_number": to_number,
+                        "from_number": from_number,
+                        "sheet_status": final_status,
+                        "next_action": final_next_action,
+                        "flow_type": flow_type,
+                    },
+                )
+                print("Klaviyo Call Outcome sent:", klaviyo_outcome, email_for_klaviyo)
+
+        except Exception as e:
+            print("Klaviyo error:", str(e))
+    else:
+        print("No valid email for Klaviyo; skipped.")
+
+    return {
+        "ok": True,
+        "event": event,
+        "row": row_num,
+        "status": final_status,
+        "next_action": final_next_action,
+        "call_id": call_id,
+        "captured_email": captured_email,
+        "flow_type": flow_type,
+    }
