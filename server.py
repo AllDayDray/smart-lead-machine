@@ -970,8 +970,19 @@ async def retell_post_call(request: Request):
 
     is_callback_without_lead = flow_type != "demo" and not lead_id and from_number
 
-    # Callback came in as outbound, so check demo sheet FIRST
+    # Outbound callback: search the current dialer sheet by caller phone FIRST
     if is_callback_without_lead:
+        row_num = find_matching_row_by_phone_candidates(
+            ws,
+            hm,
+            [from_number, lead_id, to_number],
+        )
+
+    if row_num:
+        print("CALLBACK MATCHED OUTBOUND SHEET BY PHONE:", from_number)
+
+    # If outbound sheet did not match, then check demo sheet
+    if row_num is None and is_callback_without_lead:
         try:
             demo_ws = get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME)
             demo_hm = header_map_norm(demo_ws)
