@@ -947,6 +947,8 @@ async def retell_post_call(request: Request):
     print("EVENT:", event, "FLOW:", flow_type, "CALL_ID:", call_id, "LEAD_ID:", lead_id)
     print("STATUS:", status_val, "NEXT:", next_action_val, "EMAIL:", captured_email)
 
+    row_num = None
+
     if flow_type == "demo":
         row_num = find_row_by_call_id_only(ws, hm, call_id)
 
@@ -957,165 +959,185 @@ async def retell_post_call(request: Request):
                 [from_number, lead_id, to_number],
             )
 
+        else:
+            row_num = find_matching_row_outbound(ws, hm, call_id, lead_id, to_number)
+
+        # Fallback: callback came in as outbound, but belongs to demo sheet
+        if row_num is None:
+            try:
+                demo_ws = get_ws(DEMO_SHEET_ID, DEMO_WORKSHEET_NAME)
+                demo_hm = header_map_norm(demo_ws)
+
+                demo_row = find_matching_row_by_phone_candidates(
+                    demo_ws,
+                    demo_hm,
+                    [from_number, lead_id, to_number],
+                )
+
+                if demo_row:
+                    print("CALLBACK MATCHED DEMO SHEET BY PHONE")
+                    ws = demo_ws
+                    hm = demo_hm
+                    row_num = demo_row
+                    flow_type = "demo"
+
+            except Exception as e:
+                print("Demo fallback match failed:", str(e))
+
         if row_num is None:
             print(
-                "DEMO WEBHOOK IGNORED — NO MATCHING CALL_ID OR PHONE:",
+                "WEBHOOK IGNORED — NO MATCHING ROW:",
                 call_id,
                 from_number,
                 to_number,
                 lead_id,
+                flow_type,
             )
             return {
                 "ok": True,
-                "ignored": "no_matching_demo_call_id_or_phone",
+                "ignored": "no_matching_row",
                 "call_id": call_id,
                 "from_number": from_number,
                 "to_number": to_number,
                 "lead_id": lead_id,
+                "flow_type": flow_type,
             }
-    else:
-        row_num = find_matching_row_outbound(ws, hm, call_id, lead_id, to_number)
 
-        if row_num is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Could not locate row call_id={call_id} lead_id={lead_id} to={to_number}",
+
+        cleanup: Dict[str, Any] = {}
+
+        if "email_primary" in hm:
+            existing_primary = (
+                (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
             )
+            if existing_primary and not is_valid_real_email(existing_primary):
+                cleanup["email_primary"] = ""
 
-    cleanup: Dict[str, Any] = {}
+        if "emails_found" in hm:
+            existing_found = ws.cell(row_num, hm["emails_found"]).value or ""
+            cleaned_found = clean_found_list(existing_found)
+            if cleaned_found != existing_found:
+                cleanup["emails_found"] = cleaned_found
 
-    if "email_primary" in hm:
-        existing_primary = (
-            (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
+        if cleanup:
+            batch_write_cells(ws, row_num, hm, cleanup)
+
+        if event == "call_ended":
+            current_status = (ws.cell(row_num, hm["status"]).value or "").strip().upper()
+            updates = {"last_called_at": utc_now_iso()}
+
+            if call_id:
+                updates["last_klaviyo_call_id"] = call_id
+
+            if current_status not in FINAL_STATUSES:
+                updates["status"] = "CALL_ENDED"
+                updates["next_action"] = "WAITING_FOR_ANALYSIS"
+
+            batch_write_cells(ws, row_num, hm, updates)
+
+            return {
+                "ok": True,
+                "event": event,
+                "row": row_num,
+                "call_id": call_id,
+            }
+
+        email_updates: Dict[str, Any] = {}
+
+        if captured_email:
+            if "email_primary" in hm:
+                current_primary = (
+                    (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
+                )
+                if not is_valid_real_email(current_primary):
+                    email_updates["email_primary"] = captured_email
+
+            if "emails_found" in hm:
+                current_found = ws.cell(row_num, hm["emails_found"]).value or ""
+                email_updates["emails_found"] = append_unique_email(
+                    current_found, captured_email
+                )
+
+        current_status = (
+            (ws.cell(row_num, hm["status"]).value or "").strip().upper()
+            if "status" in hm
+            else ""
         )
-        if existing_primary and not is_valid_real_email(existing_primary):
-            cleanup["email_primary"] = ""
+        current_next_action = (
+            (ws.cell(row_num, hm["next_action"]).value or "").strip()
+            if "next_action" in hm
+            else ""
+        )
 
-    if "emails_found" in hm:
-        existing_found = ws.cell(row_num, hm["emails_found"]).value or ""
-        cleaned_found = clean_found_list(existing_found)
-        if cleaned_found != existing_found:
-            cleanup["emails_found"] = cleaned_found
+        final_status, final_next_action = pick_final_status(
+            current_status,
+            status_val,
+            current_next_action,
+            next_action_val,
+        )
 
-    if cleanup:
-        batch_write_cells(ws, row_num, hm, cleanup)
+        final_updates = {
+            "status": final_status,
+            "next_action": final_next_action,
+            "last_called_at": utc_now_iso(),
+            "last_klaviyo_call_id": call_id,
+            **email_updates,
+        }
+        batch_write_cells(ws, row_num, hm, final_updates)
 
-    if event == "call_ended":
-        current_status = (ws.cell(row_num, hm["status"]).value or "").strip().upper()
-        updates = {"last_called_at": utc_now_iso()}
+        email_for_klaviyo = ""
 
-        if call_id:
-            updates["last_klaviyo_call_id"] = call_id
+        if "email_primary" in hm:
+            row_email = (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
+            if is_valid_real_email(row_email):
+                email_for_klaviyo = row_email
 
-        if current_status not in FINAL_STATUSES:
-            updates["status"] = "CALL_ENDED"
-            updates["next_action"] = "WAITING_FOR_ANALYSIS"
+        if not email_for_klaviyo and captured_email:
+            email_for_klaviyo = captured_email
 
-        batch_write_cells(ws, row_num, hm, updates)
+        if email_for_klaviyo and is_valid_real_email(email_for_klaviyo):
+            raw = final_status.upper()
+
+            if raw == "BOOKED":
+                klaviyo_outcome = "BOOKED"
+            elif raw == "CALLBACK":
+                klaviyo_outcome = "CALLBACK"
+            elif raw in ("NOT_INTERESTED", "NOT INTERESTED"):
+                klaviyo_outcome = "NOT INTERESTED"
+            else:
+                klaviyo_outcome = "FOLLOW_UP"
+
+            try:
+                klaviyo_upsert_profile(email_for_klaviyo)
+
+                if klaviyo_outcome in ("BOOKED", "CALLBACK", "FOLLOW_UP"):
+                    klaviyo_track_call_outcome(
+                        email_for_klaviyo,
+                        klaviyo_outcome,
+                        {
+                            "call_id": call_id,
+                            "lead_id": lead_id,
+                            "to_number": to_number,
+                            "from_number": from_number,
+                            "sheet_status": final_status,
+                            "next_action": final_next_action,
+                            "flow_type": flow_type,
+                        },
+                    )
+                    print("Klaviyo Call Outcome sent:", klaviyo_outcome, email_for_klaviyo)
+
+            except Exception as e:
+                print("Klaviyo error:", str(e))
+        else:
+            print("No valid email for Klaviyo; skipped.")
 
         return {
             "ok": True,
             "event": event,
             "row": row_num,
+            "status": final_status,
+            "next_action": final_next_action,
             "call_id": call_id,
+            "captured_email": captured_email,
+            "flow_type": flow_type,
         }
-
-    email_updates: Dict[str, Any] = {}
-
-    if captured_email:
-        if "email_primary" in hm:
-            current_primary = (
-                (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
-            )
-            if not is_valid_real_email(current_primary):
-                email_updates["email_primary"] = captured_email
-
-        if "emails_found" in hm:
-            current_found = ws.cell(row_num, hm["emails_found"]).value or ""
-            email_updates["emails_found"] = append_unique_email(
-                current_found, captured_email
-            )
-
-    current_status = (
-        (ws.cell(row_num, hm["status"]).value or "").strip().upper()
-        if "status" in hm
-        else ""
-    )
-    current_next_action = (
-        (ws.cell(row_num, hm["next_action"]).value or "").strip()
-        if "next_action" in hm
-        else ""
-    )
-
-    final_status, final_next_action = pick_final_status(
-        current_status,
-        status_val,
-        current_next_action,
-        next_action_val,
-    )
-
-    final_updates = {
-        "status": final_status,
-        "next_action": final_next_action,
-        "last_called_at": utc_now_iso(),
-        "last_klaviyo_call_id": call_id,
-        **email_updates,
-    }
-    batch_write_cells(ws, row_num, hm, final_updates)
-
-    email_for_klaviyo = ""
-
-    if "email_primary" in hm:
-        row_email = (ws.cell(row_num, hm["email_primary"]).value or "").strip().lower()
-        if is_valid_real_email(row_email):
-            email_for_klaviyo = row_email
-
-    if not email_for_klaviyo and captured_email:
-        email_for_klaviyo = captured_email
-
-    if email_for_klaviyo and is_valid_real_email(email_for_klaviyo):
-        raw = final_status.upper()
-
-        if raw == "BOOKED":
-            klaviyo_outcome = "BOOKED"
-        elif raw == "CALLBACK":
-            klaviyo_outcome = "CALLBACK"
-        elif raw in ("NOT_INTERESTED", "NOT INTERESTED"):
-            klaviyo_outcome = "NOT INTERESTED"
-        else:
-            klaviyo_outcome = "FOLLOW_UP"
-
-        try:
-            klaviyo_upsert_profile(email_for_klaviyo)
-
-            if klaviyo_outcome in ("BOOKED", "CALLBACK", "FOLLOW_UP"):
-                klaviyo_track_call_outcome(
-                    email_for_klaviyo,
-                    klaviyo_outcome,
-                    {
-                        "call_id": call_id,
-                        "lead_id": lead_id,
-                        "to_number": to_number,
-                        "from_number": from_number,
-                        "sheet_status": final_status,
-                        "next_action": final_next_action,
-                        "flow_type": flow_type,
-                    },
-                )
-                print("Klaviyo Call Outcome sent:", klaviyo_outcome, email_for_klaviyo)
-
-        except Exception as e:
-            print("Klaviyo error:", str(e))
-    else:
-        print("No valid email for Klaviyo; skipped.")
-
-    return {
-        "ok": True,
-        "event": event,
-        "row": row_num,
-        "status": final_status,
-        "next_action": final_next_action,
-        "call_id": call_id,
-        "captured_email": captured_email,
-        "flow_type": flow_type,
-    }
