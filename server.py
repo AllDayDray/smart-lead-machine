@@ -35,8 +35,18 @@ RETELL_API_KEY = os.getenv("RETELL_API_KEY", "").strip()
 RETELL_AGENT_ID = os.getenv("RETELL_AGENT_ID", "").strip()
 RETELL_FROM_NUMBER = os.getenv("RETELL_FROM_NUMBER", "").strip()
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 STATUS_PRIORITY = {
     "": 0,
