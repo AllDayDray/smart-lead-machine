@@ -35,14 +35,14 @@ RETELL_API_KEY = os.getenv("RETELL_API_KEY", "").strip()
 RETELL_AGENT_ID = os.getenv("RETELL_AGENT_ID", "").strip()
 RETELL_FROM_NUMBER = os.getenv("RETELL_FROM_NUMBER", "").strip()
 
-from fastapi import FastAPI
+
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://leewave.ai", "https://www.leewave.ai"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -791,7 +791,7 @@ async def retell_post_call(request: Request):
     ).strip()
 
     summary = str(
-        first_found(analysis, ["summary", "analysis_summary"])
+        first_found(analysis, ["call_summary", "summary" "analysis_summary"])
         or first_found(call, ["summary", "call_summary", "notes"])
         or first_found(payload, ["summary", "call_summary", "notes"])
         or ""
@@ -891,9 +891,8 @@ async def retell_post_call(request: Request):
     if event == "call_analyzed":
 
         call_successful = analysis.get("call_successful")
-    in_voicemail = analysis.get("in_voicemail")
+        in_voicemail = analysis.get("in_voicemail")
 
-    if event == "call_analyzed":
         if call_successful is False:
             status_val = "NO_ANSWER"
             next_action_val = "NONE"
