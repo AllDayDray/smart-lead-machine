@@ -2,7 +2,7 @@ import email
 import os
 import re
 import time
-import uuid
+# import uuid
 import requests
 from datetime import datetime, timezone
 
@@ -338,13 +338,16 @@ def main(limit_per_run=10, sleep_between_calls=0.6):
         # Do NOT overwrite your 'lead_id' column if it contains phone.
         # Use lead_uuid if present; else deterministic fallback.
         # -------------------
-        lead_uuid = str(row.get("lead_uuid") or "").strip()
-        if not lead_uuid:
-            lead_uuid = "lead_" + uuid.uuid4().hex[:12]
-            if "lead_uuid" in hm:
-                ws.update_cell(sheet_row, hm["lead_uuid"], lead_uuid)
 
-        retell_lead_id = lead_uuid if lead_uuid else f"row_{sheet_row}"
+        # lead_uuid = str(row.get("lead_uuid") or "").strip()
+        # if not lead_uuid:
+        #     lead_uuid = "lead_" + uuid.uuid4().hex[:12]
+        #     if "lead_uuid" in hm:
+        #         ws.update_cell(sheet_row, hm["lead_uuid"], lead_uuid)
+
+        # retell_lead_id = lead_uuid if lead_uuid else f"row_{sheet_row}"
+
+        retell_lead_id = phone
 
         lead_email = (
             str(row.get("email_primary") or row.get("email") or "").strip().lower()
