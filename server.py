@@ -310,13 +310,38 @@ def batch_write_cells(
 
 
 def append_row_by_headers(ws, hm: Dict[str, int], values: Dict[str, Any]) -> int:
+    """
+    Append a full row using the sheet's header map and return the exact row number written.
+
+    Do NOT use ws.append_row() here. Google Sheets can guess the wrong table range
+    when there are blank columns/rows or separated blocks of data, which can make
+    new rows start in the middle of the sheet and cause later status updates to hit
+    the wrong person.
+    """
     headers = ws.row_values(1)
     row = [""] * len(headers)
+
     for col_name, val in values.items():
         if col_name in hm:
             row[hm[col_name] - 1] = "" if val is None else str(val)
-    ws.append_row(row, value_input_option="RAW")
-    return len(ws.col_values(1))
+
+    # Use the real last occupied row across the entire sheet, not column A only.
+    # This prevents wrong-row updates when column A has blanks.
+    next_row = len(ws.get_all_values()) + 1
+    end_cell = gspread.utils.rowcol_to_a1(next_row, len(headers))
+    target_range = f"A{next_row}:{end_cell}"
+
+    ws.batch_update(
+        [
+            {
+                "range": target_range,
+                "values": [row],
+            }
+        ],
+        value_input_option="RAW",
+    )
+
+    return next_row
 
 
 def safe_find(ws, value: str, col_index: int):
