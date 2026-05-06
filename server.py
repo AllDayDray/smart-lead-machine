@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
-
+from zoneinfo import ZoneInfo
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
@@ -230,6 +230,15 @@ def append_unique_email(existing: str, new_email: str) -> str:
 # =========================
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def call_timestamp_updates(timezone_name="America/Los_Angeles"):
+    now = datetime.now(ZoneInfo(timezone_name))
+
+    return {
+        "last_called_at_iso": now.isoformat(),
+        "last_called_at_display": now.strftime("%b %d, %Y — %I:%M %p"),
+    }
 
 
 def normalize_phone_e164(phone_raw: str) -> str:
@@ -478,7 +487,11 @@ def klaviyo_track_call_outcome(email: str, call_outcome: str, props: dict) -> No
                 "profile": {
                     "data": {"type": "profile", "attributes": {"email": email}}
                 },
-                "properties": {"call_outcome": call_outcome, **(props or {})},
+                "properties": {
+                    "call_outcome": call_outcome,
+                    "status": call_outcome,
+                    **(props or {}),
+                },
                 "time": utc_now_iso(),
             },
         }
@@ -580,7 +593,14 @@ async def demo_lead(request: Request):
 
     ensure_required_columns(
         hm,
-        ["lead_id", "status", "next_action", "last_called_at", "last_klaviyo_call_id"],
+        [
+            "lead_id",
+            "status",
+            "next_action",
+            "last_called_at_iso",
+            "last_called_at_display",
+            "last_klaviyo_call_id",
+        ],
         "Demo",
     )
 
@@ -620,7 +640,9 @@ async def demo_lead(request: Request):
                     "existing_status": existing_status,
                 }
 
-            last_called_raw = str(row.get("last_called_at") or "").strip()
+            last_called_raw = str(
+                row.get("last_called_at_iso") or row.get("last_called_at") or ""
+            ).strip()
             if not last_called_raw:
                 continue
 
@@ -670,7 +692,7 @@ async def demo_lead(request: Request):
             "source": source,
             "status": "CALL_REQUESTED",
             "next_action": "WAITING_FOR_RETELL",
-            "last_called_at": utc_now_iso(),
+            **call_timestamp_updates(),
             "last_klaviyo_call_id": "",
         },
     )
@@ -702,7 +724,7 @@ async def demo_lead(request: Request):
             {
                 "status": "CALL_STARTED",
                 "next_action": "WAITING_FOR_ANALYSIS",
-                "last_called_at": utc_now_iso(),
+                **call_timestamp_updates(),
                 "last_klaviyo_call_id": call_id,
                 "flow_type": "demo",
                 "call_attempts": 1,
@@ -721,7 +743,7 @@ async def demo_lead(request: Request):
             {
                 "status": "CALL_FAILED",
                 "next_action": "REVIEW",
-                "last_called_at": utc_now_iso(),
+                **call_timestamp_updates(),
             },
         )
 
@@ -1126,7 +1148,7 @@ async def retell_post_call(request: Request):
 
     if event == "call_ended":
         current_status = (ws.cell(row_num, hm["status"]).value or "").strip().upper()
-        updates = {"last_called_at": utc_now_iso()}
+        updates = call_timestamp_updates()
 
         if call_id:
             updates["last_klaviyo_call_id"] = call_id
@@ -1181,7 +1203,7 @@ async def retell_post_call(request: Request):
     final_updates = {
         "status": final_status,
         "next_action": final_next_action,
-        "last_called_at": utc_now_iso(),
+        **call_timestamp_updates(),
         "last_klaviyo_call_id": call_id,
         **email_updates,
     }
@@ -1211,6 +1233,9 @@ async def retell_post_call(request: Request):
 
         try:
             klaviyo_upsert_profile(email_for_klaviyo)
+
+            if KLAVIYO_LIST_ID:
+                klaviyo_add_to_list(email_for_klaviyo, KLAVIYO_LIST_ID)
 
             if klaviyo_outcome in ("BOOKED", "CALLBACK", "FOLLOW_UP"):
                 klaviyo_track_call_outcome(
