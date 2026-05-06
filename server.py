@@ -580,14 +580,7 @@ async def demo_lead(request: Request):
 
     ensure_required_columns(
         hm,
-        [
-            "status",
-            "next_action",
-            "last_called_at_iso",
-            "last_called_at_display",
-            "last_klaviyo_call_id",
-            "lead_id",
-        ],
+        ["lead_id", "status", "next_action", "last_called_at", "last_klaviyo_call_id"],
         "Demo",
     )
 
@@ -784,7 +777,14 @@ async def retell_post_call(request: Request):
     hm = header_map_norm(ws)
     ensure_required_columns(
         hm,
-        ["status", "next_action", "last_called_at", "last_klaviyo_call_id", "lead_id"],
+        [
+            "status",
+            "next_action",
+            "last_called_at_iso",
+            "last_called_at_display",
+            "last_klaviyo_call_id",
+            "lead_id",
+        ],
         sheet_label,
     )
 
