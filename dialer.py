@@ -10,6 +10,8 @@ import pytz
 import gspread
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import smart_lead_machine
 
@@ -40,6 +42,15 @@ RETELL_CREATE_CALL_URL = "https://api.retellai.com/v2/create-phone-call"
 # ------------------------
 def utc_now_iso():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def get_call_timestamps(timezone_name="America/Los_Angeles"):
+    now = datetime.now(ZoneInfo(timezone_name))
+
+    return {
+        "last_called_at_iso": now.isoformat(),
+        "last_called_at_display": now.strftime("%b %d, %Y — %I:%M %p"),
+    }
 
 
 def norm_header(s: str) -> str:
@@ -288,7 +299,10 @@ def main(limit_per_run=10, sleep_between_calls=0.6):
             continue
 
         last_called = str(
-            row.get("last_called_at") or row.get("last_call_at") or ""
+            row.get("last_called_at_iso")
+            or row.get("last_called_at")
+            or row.get("last_call_at")
+            or ""
         ).strip()
         if last_called:
             try:
@@ -368,8 +382,21 @@ def main(limit_per_run=10, sleep_between_calls=0.6):
                 ws.update_cell(sheet_row, hm["call_attempts"], attempts + 1)
             if call_id and "last_klaviyo_call_id" in hm:
                 ws.update_cell(sheet_row, hm["last_klaviyo_call_id"], call_id)
-            if "last_called_at" in hm:
-                ws.update_cell(sheet_row, hm["last_called_at"], utc_now_iso())
+            timestamps = get_call_timestamps("America/Los_Angeles")
+
+            if "last_called_at_iso" in hm:
+                ws.update_cell(
+                    sheet_row,
+                    hm["last_called_at_iso"],
+                    timestamps["last_called_at_iso"],
+                )
+
+            if "last_called_at_display" in hm:
+                ws.update_cell(
+                    sheet_row,
+                    hm["last_called_at_display"],
+                    timestamps["last_called_at_display"],
+                )
 
             started += 1
             time.sleep(sleep_between_calls)

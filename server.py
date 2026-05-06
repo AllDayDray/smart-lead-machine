@@ -580,7 +580,14 @@ async def demo_lead(request: Request):
 
     ensure_required_columns(
         hm,
-        ["lead_id", "status", "next_action", "last_called_at", "last_klaviyo_call_id"],
+        [
+            "status",
+            "next_action",
+            "last_called_at_iso",
+            "last_called_at_display",
+            "last_klaviyo_call_id",
+            "lead_id",
+        ],
         "Demo",
     )
 
@@ -791,7 +798,7 @@ async def retell_post_call(request: Request):
     ).strip()
 
     summary = str(
-        first_found(analysis, ["call_summary", "summary" "analysis_summary"])
+        first_found(analysis, ["call_summary", "summary", "analysis_summary"])
         or first_found(call, ["summary", "call_summary", "notes"])
         or first_found(payload, ["summary", "call_summary", "notes"])
         or ""
